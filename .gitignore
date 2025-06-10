@@ -1,0 +1,8 @@
+qt_pvp/states.json
+venv/
+*.zip
+*.jpg
+*.log
+*.mp4
+*.pyc
+*.grec
