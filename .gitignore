@@ -1,4 +1,5 @@
 qt_pvp/states.json
+/temp/*
 venv/
 *.zip
 *.jpg
