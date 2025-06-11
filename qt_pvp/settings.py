@@ -18,7 +18,7 @@ CLOUD_PATH = posixpath.join("/Tracker", "Видео выгрузок")
 config = configparser.ConfigParser(
     inline_comment_prefixes='#',
     allow_no_value=True)
-config.read(CONFIG_PATH)
+config.read(CONFIG_PATH, encoding="utf-8")
 
 states = os.sep.join((CUR_DIR, "states.json"))
 
