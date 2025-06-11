@@ -126,7 +126,6 @@ def find_by_lifting_switches(tracks, sec_before=30, sec_after=30):
 
         bits = list(bin(s1_int & 0xFFFFFFFF)[2:].zfill(32))
         bits.reverse()
-        #logger.debug(f"[TRACK] Анализ {timestamp}, sp={track.get('sp')}, s1={s1}, IO3={bits[22]}, IO4={bits[23]}")
 
         i += 1
         min_speed_for_switch_detect = settings.config.getint("Interests", "MIN_SPEED_FOR_SWITCH_DETECT")
@@ -218,6 +217,11 @@ def find_by_lifting_switches(tracks, sec_before=30, sec_after=30):
                     i = lifting_end_idx + 1
                     continue
 
+            if last_stop_idx is None:
+                logger.warning(f"[AFTER] Нет last_stop_idx — остановка не найдена после {timestamp}")
+                i = lifting_end_idx + 1
+                continue
+
             raw_time_after = datetime.datetime.strptime(tracks[last_stop_idx].get("gt"), "%Y-%m-%d %H:%M:%S")
             adjusted_time_after = raw_time_after - datetime.timedelta(
                 seconds=settings.config.getint("Interests", "PHOTO_AFTER_SHIFT_SEC"))
@@ -250,6 +254,7 @@ def find_by_lifting_switches(tracks, sec_before=30, sec_after=30):
             i += 1
 
     return loading_intervals
+
 
 
 
