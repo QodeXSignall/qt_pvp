@@ -138,6 +138,7 @@ def find_by_lifting_switches(tracks, sec_before=30, sec_after=30):
             if int(bits[22]):
                 sec_before = 60
                 sec_after = 60
+
             logger.debug(f"[SWITCH] Принято: {'Лодка' if int(bits[22]) else 'Контейнер'} в {timestamp}")
             switch_events = []
             current_dt = datetime.datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
@@ -147,6 +148,7 @@ def find_by_lifting_switches(tracks, sec_before=30, sec_after=30):
                 logger.warning(f"[SWITCH] Индекс {i} вне диапазона треков. Прерывание.")
                 break
 
+            # Находим время для фото ДО (Последнее время в окне стабильных остановок)
             time_before = find_first_stable_stop(tracks, i, current_dt, settings)
             if not time_before:
                 logger.warning(f"[BEFORE] Не найдена остановка до сработки концевика в {timestamp}")
@@ -159,6 +161,7 @@ def find_by_lifting_switches(tracks, sec_before=30, sec_after=30):
             if bits[23] == '1':
                 switch_events.append({"datetime": timestamp, "switch": 23})
 
+            # В этом цикле мы перебираем треки и ищем трек, когда погрузка закочена (по скорости и концевику)
             while lifting_end_idx + 1 < len(tracks):
                 next_track = tracks[lifting_end_idx + 1]
                 next_s1 = next_track.get("s1")
@@ -171,8 +174,9 @@ def find_by_lifting_switches(tracks, sec_before=30, sec_after=30):
                 next_bits = list(bin(next_s1_int & 0xFFFFFFFF)[2:].zfill(32))
                 next_bits.reverse()
 
-                logger.debug(f"[SWITCH] Продолжение в {next_track.get('gt')}, IO3={next_bits[22]}, IO4={next_bits[23]}, sp={next_spd}")
+                logger.debug(f"Продолжение анализа треков после первого концевика. {next_track.get('gt')}, IO3={next_bits[22]}, IO4={next_bits[23]}, sp={next_spd}")
 
+                # Проверяем скорость и концевики, если машина поехала, то выходим из цикла
                 if next_bits[22] == '1' or next_bits[23] == '1':
                     lifting_end_idx += 1
                     sw_time = next_track.get("gt")
@@ -181,39 +185,16 @@ def find_by_lifting_switches(tracks, sec_before=30, sec_after=30):
                     if next_bits[23] == '1':
                         switch_events.append({"datetime": sw_time, "switch": 23})
                     last_switch_index = lifting_end_idx
-                elif next_spd <= 10:
+                elif next_spd <= 5:
                     lifting_end_idx += 1
                 else:
                     break
 
-            stop_count = 0
-            move_count = 0
-            last_stop_idx = None
-            time_after = None
-            k = last_switch_index + 1
-            while k < len(tracks):
-                spd = tracks[k].get("sp") or 0
-                if int(spd) <= settings.config.getint("Interests", "MIN_STOP_SPEED"):
-                    stop_count += 1
-                    move_count = 0
-                    last_stop_idx = k
-                elif stop_count >= settings.config.getint("Interests", "MIN_STOP_DURATION_SEC") and int(spd) >= settings.config.getint("Interests", "MIN_MOVE_SPEED"):
-                    move_count += 1
-                    if move_count >= settings.config.getint("Interests", "MIN_MOVE_DURATION_SEC") and last_stop_idx is not None:
-                        time_after = tracks[last_stop_idx].get("gt")
-                        break
-                else:
-                    stop_count = 0
-                    move_count = 0
-                k += 1
+            time_after, last_stop_idx = find_stop_after_lifting(tracks, last_switch_index + 1, settings, logger)
 
             if not time_after:
-                last_switch_time = datetime.datetime.strptime(tracks[last_switch_index]['gt'], "%Y-%m-%d %H:%M:%S")
-                now = datetime.datetime.now()
-                if (now - last_switch_time).total_seconds() > settings.config.getint("Interests", "MAX_WAIT_TIME_MINUTES") * 60:
-                    time_after = last_switch_time.strftime("%Y-%m-%d %H:%M:%S")
-                else:
-                    logger.warning(f"[AFTER] Не удалось определить окончание погрузки после {timestamp}")
+                time_after = fallback_photo_after_time(tracks, last_switch_index, settings, logger)
+                if not time_after:
                     i = lifting_end_idx + 1
                     continue
 
@@ -222,7 +203,8 @@ def find_by_lifting_switches(tracks, sec_before=30, sec_after=30):
                 i = lifting_end_idx + 1
                 continue
 
-            raw_time_after = datetime.datetime.strptime(tracks[last_stop_idx].get("gt"), "%Y-%m-%d %H:%M:%S")
+            # Применяем сдвиг - фото ПОСЛЕ за несколько секунд до движения
+            raw_time_after = datetime.datetime.strptime(time_after, "%Y-%m-%d %H:%M:%S")
             adjusted_time_after = raw_time_after - datetime.timedelta(
                 seconds=settings.config.getint("Interests", "PHOTO_AFTER_SHIFT_SEC"))
             time_after = adjusted_time_after.strftime("%Y-%m-%d %H:%M:%S")
@@ -255,6 +237,77 @@ def find_by_lifting_switches(tracks, sec_before=30, sec_after=30):
 
     return loading_intervals
 
+
+def find_stop_after_lifting(tracks, start_idx, settings, logger=None):
+    # В этом блоке мы ищем время для фото ПОСЛЕ погрузки — после последнего срабатывания концевика
+    stop_count = 0          # Количество точек с низкой скоростью (стоп)
+    move_count = 0          # Количество точек подряд с высокой скоростью (движение)
+    last_stop_idx = None    # Индекс последней точки с "настоящей" остановкой
+
+    # Читаем пороги из настроек
+    min_stop_speed = settings.config.getint("Interests", "MIN_STOP_SPEED")
+    min_stop_duration = settings.config.getint("Interests", "MIN_STOP_DURATION_SEC")
+    min_move_speed = settings.config.getint("Interests", "MIN_MOVE_SPEED")
+    min_move_duration = settings.config.getint("Interests", "MIN_MOVE_DURATION_SEC")
+
+    # Начинаем проходить треки сразу после последнего концевика
+    k = start_idx
+    while k < len(tracks):
+        spd = tracks[k].get("sp") or 0  # Текущая скорость
+
+        # Если объект почти стоит — возможно, началась остановка
+        if int(spd) <= min_stop_speed:
+            stop_count += 1
+            move_count = 0
+            last_stop_idx = k  # Сохраняем индекс этой потенциальной остановки
+
+        # Если была остановка и теперь пошло стабильное движение — считаем, что остановка завершена
+        elif stop_count >= min_stop_duration and int(spd) >= min_move_speed:
+            move_count += 1
+            # Подтверждаем, что было и стабильное движение
+            if move_count >= min_move_duration and last_stop_idx is not None:
+                if logger:
+                    logger.debug(f"[PHOTO AFTER] Найдена стабильная остановка на idx={last_stop_idx}, gt={tracks[last_stop_idx].get('gt')}")
+                return tracks[last_stop_idx].get("gt"), last_stop_idx  # Возвращаем и время, и индекс
+
+        # Иначе — сбрасываем всё, потому что последовательность нарушена
+        else:
+            if logger:
+                logger.debug(f"[PHOTO AFTER] Сброс счётчиков на idx={k} (spd={spd}, stop={stop_count}, move={move_count})")
+            stop_count = 0
+            move_count = 0
+
+        k += 1
+
+    # Если цикл прошёл до конца и мы так и не нашли момент — логируем это
+    if logger:
+        logger.warning(f"[PHOTO AFTER] Не удалось найти стабильную остановку после lifting (start_idx={start_idx})")
+    return None, None
+
+
+def fallback_photo_after_time(tracks, last_switch_index, settings, logger=None):
+    """
+    Страховочный механизм на случай, если не удалось найти стабильную остановку.
+    Если с момента последнего срабатывания концевика прошло достаточно времени,
+    то возвращаем время после как last_switch_time + 60 сек.
+    """
+    last_switch_time = datetime.datetime.strptime(tracks[last_switch_index]['gt'], "%Y-%m-%d %H:%M:%S")
+    now = datetime.datetime.now()
+    max_wait_sec = settings.config.getint("Interests", "MAX_WAIT_TIME_MINUTES") * 60
+
+    if (now - last_switch_time).total_seconds() > max_wait_sec:
+        fallback_time = last_switch_time + datetime.timedelta(seconds=60)
+        if logger:
+            logger.warning(
+                f"[AFTER-FALLBACK] Используем страховку: прошло >{max_wait_sec} сек, берём last_switch_time + 60 сек => {fallback_time}"
+            )
+        return fallback_time.strftime("%Y-%m-%d %H:%M:%S")
+
+    if logger:
+        logger.warning(
+            f"[AFTER-FALLBACK] Не прошло достаточно времени с момента срабатывания ({last_switch_time}), интерес отклонён"
+        )
+    return None
 
 
 
@@ -292,7 +345,7 @@ def find_first_stable_stop(tracks, start_index, current_dt, settings):
         else:
             if stop_count >= min_stop_duration and stop_start_idx is not None:
                 logger.debug(
-                    f"[НАЙДЕНО] Остановка длиной {stop_count} сек, началась в {tracks[stop_start_idx]['gt']}")
+                    f"[ДВИЖЕНИЕ ДО ОСТАНОВКИ] Найдено. Остановка длиной {stop_count} сек, началась в {tracks[stop_start_idx]['gt']}")
                 return tracks[stop_start_idx].get("gt")
 
             # сброс серии
@@ -304,7 +357,7 @@ def find_first_stable_stop(tracks, start_index, current_dt, settings):
     # Если цикл закончился, но серия осталась — тоже возвращаем
     if stop_count >= min_stop_duration and stop_start_idx is not None:
         logger.debug(
-            f"[НАЙДЕНО В КОНЦЕ] Остановка длиной {stop_count} сек, началась в {tracks[stop_start_idx]['gt']}")
+            f"[ДВИЖЕНИЕ ДО ОСТАНОВКИ] Не найдено, взят самый первый доступный трек. Остановка длиной {stop_count} сек, началась в {tracks[stop_start_idx]['gt']}")
         return tracks[stop_start_idx].get("gt")
 
     logger.warning("[ОСТАНОВКА НЕ НАЙДЕНА]")
