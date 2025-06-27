@@ -245,7 +245,7 @@ class Main:
         for video_path in file_paths:
             logger.debug(f"Работаем с {video_path}")
             if not os.path.exists(video_path):
-                logger.warning(
+                logger.error(
                     f"{reg_id}: Файл {video_path} не найден. Пропускаем.")
                 continue
             logger.info(
@@ -263,8 +263,10 @@ class Main:
         elif len(final_videos_paths_list) == 1:
             output_video_path = final_videos_paths_list[
                 0]  # Если одно видео, просто используем его
-            os.rename(output_video_path, final_interest_video_name)
-
+            if os.path.exists(output_video_path):
+                os.rename(output_video_path, final_interest_video_name)
+            else:
+                logger.error(f"Ошибка при попытке использовать видео {output_video_path}. Файл не найден.")
         else:
             logger.warning(f"{reg_id}: После обработки не осталось видео.")
             return None  # Возвращаем None, если видео не обработано
