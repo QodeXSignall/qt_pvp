@@ -222,11 +222,13 @@ class Main:
         )
 
         if upload_status:
-            logger.info(
-                f"{reg_id}: Загрузка прошла успешно. Удаляем локальный файл.")
-            os.remove(output_video_path)
-            shutil.rmtree(os.path.join(settings.TEMP_FOLDER,
-                                       interest_name))
+            logger.info(f"{reg_id}: Загрузка прошла успешно.")
+            if settings.config.getboolean("General", "del_source_video_after_upload"):
+                logger.info(
+                    f"{reg_id}: Удаляем локальный файл.")
+                os.remove(output_video_path)
+                shutil.rmtree(os.path.join(settings.TEMP_FOLDER,
+                                           interest_name))
         else:
             logger.error(f"{reg_id}: Ошибка загрузки {interest_name}.")
 
@@ -271,14 +273,9 @@ class Main:
             logger.warning(f"{reg_id}: После обработки не осталось видео.")
             return None  # Возвращаем None, если видео не обработано
 
-        if settings.config.getboolean("General", "del_source_video_after_upload"):
-            for video_path in file_paths:
-                if os.path.exists(video_path):
-                    logger.info(f"{reg_id}. Удаляю исходный файл {video_path}")
-                    os.remove(video_path)
-        if converted_videos:
-            logger.debug("Удаляем конвертированные файлы")
-            for file in converted_videos:
+        if converted_videos and settings.config.getboolean("General", "del_source_video_after_upload"):
+            logger.debug("Удаляем исходные файлы до конвертации")
+            for file in file_paths:
                 if os.path.exists(file):
                     logger.debug(f"Удаляем {file}")
                     os.remove(file)
