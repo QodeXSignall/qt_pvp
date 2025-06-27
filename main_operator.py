@@ -75,6 +75,8 @@ class Main:
         reg_info = main_funcs.get_reg_info(
             reg_id) or main_funcs.create_new_reg(reg_id)
         logger.debug(f"Информация о регистраторе {reg_id} - {reg_info}")
+        if not reg_info:
+            main_funcs.create_new_reg(reg_id)
         chanel_id = reg_info.get("chanel_id",
                                  0)  # Если нет ID канала, ставим 0
 
@@ -234,9 +236,6 @@ class Main:
         logger.info(
             f"{reg_id}: Начинаем обработку видео {file_paths} для {interest['name']}.")
         interest_name = interest["name"]
-        interest_temp_folder = os.path.join(settings.TEMP_FOLDER,
-                                            interest_name)
-        os.makedirs(interest_temp_folder, exist_ok=True)
 
         final_interest_video_name = os.path.join(
             settings.INTERESTING_VIDEOS_FOLDER,
@@ -249,41 +248,38 @@ class Main:
                 logger.warning(
                     f"{reg_id}: Файл {video_path} не найден. Пропускаем.")
                 continue
-
             logger.info(
                 f"{reg_id}: Конвертация {video_path} в {self.output_format}.")
             converted_video = main_funcs.process_video_file(
                 video_path, final_interest_video_name)
-
             if converted_video:
                 converted_videos.append(converted_video)
-                if os.path.exists(video_path):
-                    logger.info(f"{reg_id}. Удаляю исходный файл {video_path}")
-                    os.remove(
-                        video_path)  # Удаляем исходный файл после конвертации
 
-        # Объединяем видео, если их несколько
-        if len(converted_videos) > 1:
+        final_videos_paths_list = (converted_videos if converted_videos else file_paths)
+        if len(final_videos_paths_list) > 1:
             await asyncio.to_thread(main_funcs.concatenate_videos,
-                                    converted_videos,
+                                    final_videos_paths_list,
                                     final_interest_video_name)
-
-            # Удаляем временные файлы после объединения
-            shutil.rmtree(interest_temp_folder)
-            for file in converted_videos:
-                if os.path.exists(file):
-                    os.remove(file)
-
-        elif len(converted_videos) == 1:
-            output_video_path = converted_videos[
+        elif len(final_videos_paths_list) == 1:
+            output_video_path = final_videos_paths_list[
                 0]  # Если одно видео, просто используем его
-            os.rename(output_video_path,
-                      final_interest_video_name)
+            os.rename(output_video_path, final_interest_video_name)
 
         else:
             logger.warning(f"{reg_id}: После обработки не осталось видео.")
             return None  # Возвращаем None, если видео не обработано
 
+        if settings.config.getboolean("General", "del_source_video_after_upload"):
+            for video_path in file_paths:
+                if os.path.exists(video_path):
+                    logger.info(f"{reg_id}. Удаляю исходный файл {video_path}")
+                    os.remove(video_path)
+        if converted_videos:
+            logger.debug("Удаляем конвертированные файлы")
+            for file in converted_videos:
+                if os.path.exists(file):
+                    logger.debug(f"Удаляем {file}")
+                    os.remove(file)
         return final_interest_video_name
 
     def get_last_interest_datetime(self, interests):

@@ -174,6 +174,7 @@ def find_by_lifting_switches(tracks, sec_before=30, sec_after=30):
                 next_bits = list(bin(next_s1_int & 0xFFFFFFFF)[2:].zfill(32))
                 next_bits.reverse()
 
+                logger.debug("Теперь ищем когда машина поехала после погрузки.")
                 logger.debug(f"Продолжение анализа треков после первого концевика. {next_track.get('gt')}, IO3={next_bits[22]}, IO4={next_bits[23]}, sp={next_spd}")
 
                 # Проверяем скорость и концевики, если машина поехала, то выходим из цикла
@@ -312,7 +313,7 @@ def fallback_photo_after_time(tracks, last_switch_index, settings, logger=None):
 
 
 def find_first_stable_stop(tracks, start_index, current_dt, settings):
-    logger.debug("Анализ трека")
+    logger.debug("Ищем движение и остановку до первого срабатывания концевика")
     cutoff_time = current_dt - datetime.timedelta(
         seconds=settings.config.getint("Interests", "MAX_LOOKBACK_SECONDS"))
     min_stop_speed = settings.config.getint("Interests", "MIN_STOP_SPEED")

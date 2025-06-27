@@ -182,23 +182,20 @@ def get_analyze_by_alarm(date, device_id, skip_depot=False):
 
 
 def get_json_states():
-    json_states_mutex.acquire()
     with open(settings.states) as fobj:
         states = json.load(fobj)
-    json_states_mutex.release()
     return states
 
 
 def save_new_states_to_file(states):
-    json_states_mutex.acquire()
     with open(settings.states, "w") as fobj:
         json.dump(states, fobj, indent=4)
-    json_states_mutex.release()
 
 
 def get_regs_states(**kwargs):
-    return get_json_states()["regs"]
-
+    with json_states_mutex:
+        states = get_json_states()["regs"]
+    return states
 
 def get_interests(reg_id):
     reg_info = get_reg_info(reg_id)
@@ -208,18 +205,20 @@ def get_interests(reg_id):
 
 
 def save_new_interests(reg_id, interests):
-    states = get_json_states()
-    if not reg_id in states["regs"]:
-        create_new_reg(reg_id)
-    states["regs"][reg_id]["states"] = interests
-    save_new_states_to_file(states)
+    with json_states_mutex:
+        states = get_json_states()
+        if not reg_id in states["regs"]:
+            create_new_reg(reg_id)
+        states["regs"][reg_id]["states"] = interests
+        save_new_states_to_file(states)
 
 
 def clean_interests(reg_id):
-    logger.debug("Cleaning interests in states.json")
-    states = get_json_states()
-    states["regs"][reg_id]["interests"] = []
-    save_new_states_to_file(states)
+    with json_states_mutex:
+        logger.debug("Cleaning interests in states.json")
+        states = get_json_states()
+        states["regs"][reg_id]["interests"] = []
+        save_new_states_to_file(states)
 
 
 def get_reg_info(reg_id):
@@ -230,18 +229,24 @@ def get_reg_info(reg_id):
 
 
 def create_new_reg(reg_id):
-    info = get_json_states()
-    if reg_id in info["regs"].keys():
-        return
-    last_upload = datetime.datetime.today() - datetime.timedelta(days=7)
-    info["regs"][reg_id] = {
-        "interests": [],
-        "chanel_id": 0,
-        "last_upload_time": last_upload.strftime("%Y-%m-%d %H:%M:%S"),
-        "door_limit_switch": 0,
-        "lifting_limit_switch": 0
-    }
-    save_new_states_to_file(info)
+    with json_states_mutex:
+        info = get_json_states()
+        if reg_id in info["regs"].keys():
+            return
+        last_upload = datetime.datetime.today() - datetime.timedelta(days=7)
+        new_reg_info = {
+            "interests": [],
+            "chanel_id": 0,
+            "last_upload_time": last_upload.strftime("%Y-%m-%d %H:%M:%S"),
+            "by_trigger": 1,
+            "by_stops": 0,
+            "by_door_limit_switch": 0,
+            "by_lifting_limit_switch": 1,
+            "continuous": 0,
+        }
+        info["regs"][reg_id] = new_reg_info
+        save_new_states_to_file(info)
+    return new_reg_info
 
 
 def get_reg_last_upload_time(reg_id):
@@ -254,13 +259,14 @@ def get_reg_last_upload_time(reg_id):
 
 
 def save_new_reg_last_upload_time(reg_id, timestamp):
-    logger.info(
-        f"{reg_id}. Обновлен `last_upload_time`: {timestamp}")
-    states = get_json_states()
-    if not reg_id in states["regs"]:
-        create_new_reg(reg_id)
-    states["regs"][reg_id]["last_upload_time"] = timestamp
-    save_new_states_to_file(states)
+    with json_states_mutex:
+        logger.info(
+            f"{reg_id}. Обновлен `last_upload_time`: {timestamp}")
+        states = get_json_states()
+        if not reg_id in states["regs"]:
+            create_new_reg(reg_id)
+        states["regs"][reg_id]["last_upload_time"] = timestamp
+        save_new_states_to_file(states)
 
 
 def video_remover_cycle():
@@ -368,11 +374,11 @@ def process_video_file(file_path, output_file_path):
     need_conversion = False
     if format_name != 'mp4':
         need_conversion = True
-        logger.info("Файл не в формате MP4. Требуется конвертация.")
+        logger.info(f"Файл не в формате MP4 ({format_name}). Требуется конвертация.")
     elif video_codec != 'h264':
         need_conversion = True
         logger.info(
-            "Файл в формате MP4, но кодек не H.264. Требуется конвертация.")
+            f"Файл в формате MP4, но кодек не H.264 ({video_codec}). Требуется конвертация.")
     else:
         logger.info(
             "Файл уже в формате MP4 с кодеком H.264. Конвертация не требуется.")

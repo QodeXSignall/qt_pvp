@@ -60,17 +60,30 @@ def create_folder_if_not_exists(client, folder_path):
         return False
 
 
-def upload_file_to_cloud(client, local_file_path, remote_path):
+def upload_file_to_cloud(client, local_file_path, remote_path, retries=3, delay_sec=2):
     """
-    Загрузка файла на WebDAV сервер в указанную папку.
+    Загрузка файла на WebDAV сервер в указанную папку с повторами при ошибке.
+
+    :param client: WebDAV клиент.
+    :param local_file_path: Путь к локальному файлу.
+    :param remote_path: Путь на сервере.
+    :param retries: Количество попыток.
+    :param delay_sec: Задержка между попытками.
+    :return: True если успех, иначе False.
     """
-    try:
-        client.upload_sync(remote_path=remote_path,
-                           local_path=local_file_path)
-        print(f"Файл {local_file_path} успешно загружен.")
-        return True
-    except Exception as e:
-        print(f"Ошибка загрузки файла {local_file_path}: {e}")
+    for attempt in range(1, retries + 1):
+        try:
+            client.upload_sync(remote_path=remote_path,
+                               local_path=local_file_path)
+            logger.info(f"Файл {local_file_path} успешно загружен в {remote_path}.")
+            return True
+        except Exception as e:
+            logger.warning(f"Попытка {attempt} загрузки {local_file_path} не удалась: {e}")
+            if attempt < retries:
+                time.sleep(delay_sec)
+            else:
+                logger.error(f"Файл {local_file_path} не удалось загрузить после {retries} попыток.")
+    return False
 
 
 def delete_local_file(local_file_path):
