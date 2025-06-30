@@ -1,6 +1,7 @@
 from _thread import allocate_lock
 from qt_pvp.logger import logger
 from qt_pvp import settings
+from typing import List
 import subprocess
 import datetime
 import requests
@@ -11,6 +12,7 @@ import json
 import uuid
 import time
 import os
+
 
 json_states_mutex = allocate_lock()
 
@@ -389,3 +391,54 @@ def process_video_file(file_path, output_file_path):
         convert_to_mp4_h264(file_path, output_file_path)
         return output_file_path
     return file_path
+
+
+def merge_overlapping_interests(interests: List[dict]) -> List[dict]:
+    if not interests:
+        return []
+
+    # Сортируем по началу
+    sorted_interests = sorted(interests, key=lambda x: x['beg_sec'])
+    merged = []
+
+    current = sorted_interests[0].copy()
+    for next_interest in sorted_interests[1:]:
+        # Пересекаются, если начало следующего раньше конца текущего
+        if next_interest['beg_sec'] <= current['end_sec']:
+            logger.info("Обнаружение пересечение интересов. Объединение...")
+            # Объединяем интервалы
+            current['beg_sec'] = min(current['beg_sec'], next_interest['beg_sec'])
+            current['end_sec'] = max(current['end_sec'], next_interest['end_sec'])
+
+            # Объединяем временные метки
+            current['start_time'] = min(current['start_time'], next_interest['start_time'])
+            current['end_time'] = max(current['end_time'], next_interest['end_time'])
+            current['photo_before_timestamp'] = min(
+                current.get('photo_before_timestamp', current['start_time']),
+                next_interest.get('photo_before_timestamp', next_interest['start_time'])
+            )
+            current['photo_after_timestamp'] = max(
+                current.get('photo_after_timestamp', current['end_time']),
+                next_interest.get('photo_after_timestamp', next_interest['end_time'])
+            )
+
+            # Объединяем фото в секундах
+            current['photo_before_sec'] = min(current.get('photo_before_sec', current['beg_sec']),
+                                              next_interest.get('photo_before_sec', next_interest['beg_sec']))
+            current['photo_after_sec'] = max(current.get('photo_after_sec', current['end_sec']),
+                                             next_interest.get('photo_after_sec', next_interest['end_sec']))
+
+            # Объединяем события переключателей
+            if 'report' in current and 'report' in next_interest:
+                current_switches = current['report'].get('switch_events', [])
+                next_switches = next_interest['report'].get('switch_events', [])
+                merged_switches = current_switches + next_switches
+                merged_switches.sort(key=lambda x: x['datetime'])
+                current['report']['switch_events'] = merged_switches
+                current['report']['switches_amount'] = len(merged_switches)
+        else:
+            merged.append(current)
+            current = next_interest.copy()
+
+    merged.append(current)
+    return merged

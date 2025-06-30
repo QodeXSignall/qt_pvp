@@ -162,6 +162,7 @@ def find_by_lifting_switches(tracks, sec_before=30, sec_after=30):
                 switch_events.append({"datetime": timestamp, "switch": 23})
 
             # В этом цикле мы перебираем треки и ищем трек, когда погрузка закочена (по скорости и концевику)
+            logger.debug("Теперь ищем когда машина поехала после погрузки.")
             while lifting_end_idx + 1 < len(tracks):
                 next_track = tracks[lifting_end_idx + 1]
                 next_s1 = next_track.get("s1")
@@ -174,7 +175,6 @@ def find_by_lifting_switches(tracks, sec_before=30, sec_after=30):
                 next_bits = list(bin(next_s1_int & 0xFFFFFFFF)[2:].zfill(32))
                 next_bits.reverse()
 
-                logger.debug("Теперь ищем когда машина поехала после погрузки.")
                 logger.debug(f"Продолжение анализа треков после первого концевика. {next_track.get('gt')}, IO3={next_bits[22]}, IO4={next_bits[23]}, sp={next_spd}")
 
                 # Проверяем скорость и концевики, если машина поехала, то выходим из цикла
@@ -559,7 +559,6 @@ def analyze_tracks_get_interests(tracks, by_stops=False,
                                  by_lifting_limit_switch=False):
     # was_stop = None
     interests = []
-    # print(tracks)
     if by_stops:
         interests = find_stops(tracks)
         return interests[1:-1] if len(interests) > 2 else []

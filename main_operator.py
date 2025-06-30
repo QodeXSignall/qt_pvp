@@ -111,6 +111,7 @@ class Main:
                                                      end_time)
             return
         logger.info(f"{reg_id}: Найдено {len(interests)} интересов")
+        interests = main_funcs.merge_overlapping_interests(interests)
         for interest in interests:
             logger.info(f"Работаем с интересом {interest}")
             interest_cloud_folder = cloud_uploader.create_interest_folder_path(
