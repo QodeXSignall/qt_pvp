@@ -115,9 +115,10 @@ def find_stops(tracks):
     return stop_intervals[1:-1] if len(stop_intervals) > 2 else []
 
 
-def find_by_lifting_switches(tracks, sec_before=30, sec_after=30):
+def find_interests_by_lifting_switches(tracks, sec_before=30, sec_after=30):
     loading_intervals = []
     i = 0
+    first_interest = True   # Используем в случаях, когда для первого интереса не найдена начальная остановка в заданных треках
     while i < len(tracks):
         track = tracks[i]
         s1 = track.get("s1")
@@ -151,6 +152,9 @@ def find_by_lifting_switches(tracks, sec_before=30, sec_after=30):
             time_before = find_first_stable_stop(tracks, i, current_dt, settings)
             if not time_before:
                 logger.warning(f"[BEFORE] Не найдена остановка до сработки концевика в {timestamp}")
+                if first_interest:
+                    logger.warning("[BEFORE] Это был первый интерес, возвращаемся для получения дополнительных треков")
+                    return {"error": "No stop before switch found for first interest"}
 
             lifting_end_idx = i
             last_switch_index = i
@@ -230,6 +234,7 @@ def find_by_lifting_switches(tracks, sec_before=30, sec_after=30):
                     "switch_events": switch_events
                 }
                 loading_intervals.append(interval)
+                first_interest = False
             else:
                 logger.info(f"[SKIP] Пропуск: нет {'time_before' if not time_before else ''}{' и ' if not time_before and not time_after else ''}{'time_after' if not time_after else ''}")
 
@@ -237,7 +242,7 @@ def find_by_lifting_switches(tracks, sec_before=30, sec_after=30):
         else:
             i += 1
 
-    return loading_intervals
+    return {"interests": loading_intervals}
 
 
 def find_stop_after_lifting(tracks, start_idx, settings, logger=None):
@@ -564,12 +569,13 @@ def analyze_tracks_get_interests(tracks, by_stops=False,
         interests = find_stops(tracks)
         return interests[1:-1] if len(interests) > 2 else []
     elif by_lifting_limit_switch:
-        interests = find_by_lifting_switches(tracks)
+        interests = find_interests_by_lifting_switches(tracks)
         return interests
     elif continuous:
         interests = get_interest_from_track(
             tracks[-1], tracks[0]["gt"], tracks[-1]["gt"])
-    logger.debug(f"Get interests: {interests}")
+    if "interests" in interests:
+        logger.debug(f"Get interests: {interests['interests']}")
     return interests
 
 

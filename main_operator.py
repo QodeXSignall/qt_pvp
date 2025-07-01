@@ -44,20 +44,26 @@ class Main:
             self.devices_in_progress.remove(reg_id)
 
     def get_interests(self, reg_id, reg_info, start_time, stop_time):
-        tracks = cms_api.get_device_track_all_pages(
-            jsession=self.jsession,
-            device_id=reg_id,
-            start_time=start_time,
-            stop_time=stop_time,
-        )
-        interests = cms_api_funcs.analyze_tracks_get_interests(
-            tracks=tracks,
-            by_stops=reg_info["by_stops"],
-            continuous=reg_info["continuous"],
-            by_lifting_limit_switch=reg_info["by_lifting_limit_switch"],
+        while True:
+            tracks = cms_api.get_device_track_all_pages(
+                jsession=self.jsession,
+                device_id=reg_id,
+                start_time=start_time,
+                stop_time=stop_time,
+            )
+            interests = cms_api_funcs.analyze_tracks_get_interests(
+                tracks=tracks,
+                by_stops=reg_info["by_stops"],
+                continuous=reg_info["continuous"],
+                by_lifting_limit_switch=reg_info["by_lifting_limit_switch"],
 
-        )
-        return interests
+            )
+            if "interests" in interests:
+                return interests["interests"]
+            elif "error" in interests:
+                start_time = start_time.strftime("%Y-%m-%d %H:%M:%S") - datetime.timedelta(minutes=1)
+                start_time = datetime.datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
+                logger.info(f"Теперь ищем треки с {start_time}")
 
     async def download_reg_videos(self, reg_id, chanel_id: int = None,
                                   start_time=None, end_time=None,
