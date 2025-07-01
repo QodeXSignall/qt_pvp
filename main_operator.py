@@ -225,11 +225,14 @@ class Main:
         if upload_status:
             logger.info(f"{reg_id}: Загрузка прошла успешно.")
             if settings.config.getboolean("General", "del_source_video_after_upload"):
-                logger.info(
-                    f"{reg_id}: Удаляем локальный файл.")
-                os.remove(output_video_path)
-                shutil.rmtree(os.path.join(settings.TEMP_FOLDER,
-                                           interest_name))
+                logger.info(f"{reg_id}: Удаляем локальный файл.")
+                if os.path.exists(output_video_path):
+                    os.remove(output_video_path)
+                interest_temp_folder = os.path.join(settings.TEMP_FOLDER,
+                                           interest_name)
+                if os.path.exists(interest_temp_folder):
+                    logger.info(f"{reg_id}: Удаляем временную директорию интереса.")
+                    shutil.rmtree(interest_temp_folder)
         else:
             logger.error(f"{reg_id}: Ошибка загрузки {interest_name}.")
 
