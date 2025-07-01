@@ -149,7 +149,7 @@ def find_interests_by_lifting_switches(tracks, sec_before=30, sec_after=30):
                 break
 
             # Находим время для фото ДО (Последнее время в окне стабильных остановок)
-            time_before = find_first_stable_stop(tracks, i, current_dt, settings)
+            time_before = find_first_stable_stop(tracks, i, current_dt, settings, first_interest)
             if not time_before:
                 logger.warning(f"[BEFORE] Не найдена остановка до сработки концевика в {timestamp}")
                 if first_interest:
@@ -318,7 +318,7 @@ def fallback_photo_after_time(tracks, last_switch_index, settings, logger=None):
 
 
 
-def find_first_stable_stop(tracks, start_index, current_dt, settings):
+def find_first_stable_stop(tracks, start_index, current_dt, settings, first_interest=False):
     logger.debug("Ищем движение и остановку до первого срабатывания концевика")
     cutoff_time = current_dt - datetime.timedelta(
         seconds=settings.config.getint("Interests", "MAX_LOOKBACK_SECONDS"))
@@ -363,6 +363,9 @@ def find_first_stable_stop(tracks, start_index, current_dt, settings):
 
     # Если цикл закончился, но серия осталась — тоже возвращаем
     if stop_count >= min_stop_duration and stop_start_idx is not None:
+        if first_interest:
+            logger.debug("[ДВИЖЕНИЕ ДО ОСТАНОВКИ] Не найдено, это первый трек, возрващаем None для дальнейшего запроса еще треков")
+            return None
         logger.debug(
             f"[ДВИЖЕНИЕ ДО ОСТАНОВКИ] Не найдено, взят самый первый доступный трек. Остановка длиной {stop_count} сек, началась в {tracks[stop_start_idx]['gt']}")
         return tracks[stop_start_idx].get("gt")
