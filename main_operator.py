@@ -225,8 +225,8 @@ class Main:
         if upload_status:
             logger.info(f"{reg_id}: Загрузка прошла успешно.")
             if settings.config.getboolean("General", "del_source_video_after_upload"):
-                logger.info(f"{reg_id}: Удаляем локальный файл.")
                 if os.path.exists(output_video_path):
+                    logger.info(f"{reg_id}: Удаляем локальный файл ({output_video_path}).")
                     os.remove(output_video_path)
                 interest_temp_folder = os.path.join(settings.TEMP_FOLDER,
                                            interest_name)
