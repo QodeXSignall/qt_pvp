@@ -217,8 +217,10 @@ def find_by_lifting_switches(tracks, sec_before=30, sec_after=30):
                 logger.info(f"[INTEREST] Интерес от {time_before} до {time_after}")
                 interval = get_interest_from_track(
                     tracks[-1],
-                    start_time=time_30_before_dt.strftime("%Y-%m-%d %H:%M:%S"),
-                    end_time=time_30_after,
+                    start_time=time_before,
+                    #start_time=time_30_before_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                    end_time=time_after,
+                    #end_time=time_30_after,
                     photo_before_timestamp=time_before,
                     photo_after_timestamp=time_after
                 )
