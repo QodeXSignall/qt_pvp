@@ -115,7 +115,7 @@ def find_stops(tracks):
     return stop_intervals[1:-1] if len(stop_intervals) > 2 else []
 
 
-def find_by_lifting_switches(tracks, sec_before=30, sec_after=20):
+def find_by_lifting_switches(tracks, sec_before=30, sec_after=30):
     loading_intervals = []
     i = 0
     while i < len(tracks):
