@@ -264,7 +264,7 @@ class Main:
                 f"{reg_id}: Конвертация {video_path} в {self.output_format}.")
             output_filename = os.path.join(
                 settings.INTERESTING_VIDEOS_FOLDER,
-                f"{interest_name}_{video_path.index(video_path)}.{self.output_format}")
+                f"{interest_name}_{file_paths.index(video_path)}.{self.output_format}")
             converted_video = main_funcs.process_video_file(
                 video_path, output_filename)
             if converted_video:
