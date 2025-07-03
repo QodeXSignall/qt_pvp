@@ -262,8 +262,11 @@ class Main:
                 continue
             logger.info(
                 f"{reg_id}: Конвертация {video_path} в {self.output_format}.")
+            output_filename = os.path.join(
+                settings.INTERESTING_VIDEOS_FOLDER,
+                f"{interest_name}_{video_path.index(video_path)}.{self.output_format}")
             converted_video = main_funcs.process_video_file(
-                video_path, final_interest_video_name)
+                video_path, output_filename)
             if converted_video:
                 converted_videos.append(converted_video)
 
