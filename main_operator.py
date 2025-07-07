@@ -131,7 +131,7 @@ class Main:
                 chanel_id,
                 reg_id=reg_id)
             if not interest:
-                logger.warning(f"{reg_id}: Не удалось получить видеофайлы для интереса {interest['name']}")
+                logger.warning(f"{reg_id}: Не удалось получить видеофайлы для интереса")
                 continue
 
             interest["cloud_folder"] = interest_cloud_folder
