@@ -131,6 +131,7 @@ def find_interests_by_lifting_switches(tracks, sec_before=30, sec_after=30):
         i += 1
         min_speed_for_switch_detect = settings.config.getint("Interests", "MIN_SPEED_FOR_SWITCH_DETECT")
         if bits[22] == '1' or bits[23] == '1':
+            cargo_type = "Лодка" if int(bits[22]) else "Контейнер"
             logger.info(f"[SWITCH] Срабатывание концевика в {timestamp}, IO3={bits[22]}, IO4={bits[23]}")
             if track.get("sp") > min_speed_for_switch_detect:
                 logger.debug(f"[SWITCH] Игнор: скорость {track.get('sp')} > {min_speed_for_switch_detect}")
@@ -139,7 +140,7 @@ def find_interests_by_lifting_switches(tracks, sec_before=30, sec_after=30):
             if int(bits[22]):
                 sec_before = 120
 
-            logger.debug(f"[SWITCH] Принято: {'Лодка' if int(bits[22]) else 'Контейнер'} в {timestamp}")
+            logger.debug(f"[SWITCH] Принято: {cargo_type} в {timestamp}")
             switch_events = []
             current_dt = datetime.datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
             time_30_before_dt = current_dt - datetime.timedelta(seconds=sec_before)
@@ -229,6 +230,7 @@ def find_interests_by_lifting_switches(tracks, sec_before=30, sec_after=30):
                     photo_after_timestamp=time_after
                 )
                 interval["report"] = {
+                    "cargo_type": cargo_type,
                     "geo": track["ps"],
                     "switches_amount": len(switch_events),
                     "switch_events": switch_events
