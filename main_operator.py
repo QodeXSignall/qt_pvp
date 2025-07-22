@@ -135,7 +135,58 @@ class Main:
                 continue
 
             interest["cloud_folder"] = interest_cloud_folder
-            await self.process_and_upload_videos_async(reg_id, interest)
+            #await self.process_and_upload_videos_async(reg_id, interest)
+            interest["cloud_folder"] = interest_cloud_folder
+
+            # Попытки: сначала без расширения, потом 15/30/45 сек
+            max_attempts = 3
+            buffer_intervals = [15, 30, 45]
+            attempt = 0
+            success = False
+
+            while attempt <= max_attempts:
+                try:
+                    # При первой попытке — без изменений
+                    if attempt == 0:
+                        current_interest = interest
+                    else:
+                        buffer = buffer_intervals[attempt - 1]
+                        logger.warning(f"{reg_id}: Повторная попытка #{attempt} с интервалом ±{buffer} сек.")
+                        current_interest = interest.copy()
+                        current_interest["start_time"] = (
+                            datetime.datetime.strptime(interest["start_time"], "%Y-%m-%d %H:%M:%S") -
+                            datetime.timedelta(seconds=buffer)
+                        ).strftime("%Y-%m-%d %H:%M:%S")
+                        current_interest["end_time"] = (
+                            datetime.datetime.strptime(interest["end_time"], "%Y-%m-%d %H:%M:%S") +
+                            datetime.timedelta(seconds=buffer)
+                        ).strftime("%Y-%m-%d %H:%M:%S")
+
+                        current_interest = await cms_api.download_interest_videos(
+                            self.jsession,
+                            current_interest,
+                            chanel_id,
+                            reg_id=reg_id)
+
+                        if not current_interest:
+                            logger.error(f"{reg_id}: Скачивание видео не удалось на попытке #{attempt}")
+                            attempt += 1
+                            continue
+
+                        current_interest["cloud_folder"] = interest_cloud_folder
+
+                    await self.process_and_upload_videos_async(reg_id, current_interest)
+                    success = True
+                    break  # Успех — выходим
+
+                except Exception as e:
+                    logger.error(f"{reg_id}: Ошибка при попытке #{attempt}: {e}")
+                    attempt += 1
+
+            if not success:
+                logger.error(f"{reg_id}: Все {max_attempts + 1} попыток обработать интерес {interest['name']} завершились неудачно.")
+                break
+
 
             if settings.config.getboolean("General", "pics_before_after"):
                 # Запускаем скачивание фото и обработку видео ПАРАЛЛЕЛЬНО
