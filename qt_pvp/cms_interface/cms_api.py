@@ -198,37 +198,59 @@ async def wait_and_get_dwn_url(jsession, download_task_url):
             time.sleep(1)
 
 
-async def download_interest_videos(jsession, interest, chanel_id, reg_id,
-                                   split=False):
-    logger.info(f"Загружаем видео...")
-    start_time_datetime = datetime.datetime.strptime(
-        interest["start_time"], "%Y-%m-%d %H:%M:%S")
-    interest["file_paths"] = []
-    response = get_video(
-        jsession=jsession,
-        device_id=reg_id,
-        chanel_id=chanel_id,
-        start_time_seconds=interest["beg_sec"],
-        end_time_seconds=interest["end_sec"],
-        year=start_time_datetime.year,
-        month=start_time_datetime.month,
-        day=start_time_datetime.day
-    )
-    response_json = response.json()
+async def download_interest_videos(jsession, interest, chanel_id, reg_id, split=False):
+    logger.info("Загружаем видео...")
 
-    logger.debug(
-        f"Get video response: {response_json}, {response.status_code}")
-    if "files" not in response_json:
-        logger.warning(f"Not files found on chanel_id {chanel_id}")
-        return
-    files = response_json["files"]
-    for file in files:
-        download_task_url = file["DownTaskUrl"]
-        file_path = await wait_and_get_dwn_url(
+    start_time_datetime = datetime.datetime.strptime(
+        interest["start_time"], "%Y-%m-%d %H:%M:%S"
+    )
+    interest["file_paths"] = []
+
+    max_attempts = 5
+    adjustment_step = 10  # сек
+
+    beg_sec = interest["beg_sec"]
+    end_sec = interest["end_sec"]
+
+    for attempt in range(max_attempts):
+        logger.debug(f"Попытка {attempt + 1}: beg_sec={beg_sec}, end_sec={end_sec}")
+
+        response = get_video(
             jsession=jsession,
-            download_task_url=download_task_url)
-        interest["file_paths"].append(file_path)
-    return interest
+            device_id=reg_id,
+            chanel_id=chanel_id,
+            start_time_seconds=beg_sec,
+            end_time_seconds=end_sec,
+            year=start_time_datetime.year,
+            month=start_time_datetime.month,
+            day=start_time_datetime.day,
+        )
+
+        try:
+            response_json = response.json()
+        except Exception as e:
+            logger.warning(f"Ошибка при парсинге JSON: {e}")
+            return None
+
+        logger.debug(f"Get video response: {response_json}, {response.status_code}")
+
+        if "files" in response_json and response_json["files"]:
+            for file in response_json["files"]:
+                download_task_url = file["DownTaskUrl"]
+                file_path = await wait_and_get_dwn_url(
+                    jsession=jsession,
+                    download_task_url=download_task_url
+                )
+                interest["file_paths"].append(file_path)
+            return interest
+
+        # Если не нашли файлы — расширяем интервал
+        beg_sec = max(0, beg_sec - adjustment_step)
+        end_sec = end_sec + adjustment_step
+
+    logger.warning(f"Файлы не найдены после {max_attempts} попыток на chanel_id {chanel_id}")
+    return None
+
 
 
 async def get_frames(jsession, reg_id: str,
