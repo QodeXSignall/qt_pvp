@@ -143,7 +143,7 @@ def find_interests_by_lifting_switches(tracks, sec_before=30, sec_after=30, star
             logger.debug(f"[SWITCH] Принято: {cargo_type} в {timestamp}")
             switch_events = []
             current_dt = datetime.datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
-            time_30_before_dt = current_dt - datetime.timedelta(seconds=sec_before)
+            #time_30_before_dt = current_dt - datetime.timedelta(seconds=sec_before)
 
             if i >= len(tracks):
                 logger.warning(f"[SWITCH] Индекс {i} вне диапазона треков. Прерывание.")
