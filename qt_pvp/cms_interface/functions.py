@@ -578,7 +578,7 @@ def analyze_tracks_get_interests(tracks, by_stops=False,
         interests = find_stops(tracks)
         return interests[1:-1] if len(interests) > 2 else []
     elif by_lifting_limit_switch:
-        interests = find_interests_by_lifting_switches(tracks, start_tracks_search_time)
+        interests = find_interests_by_lifting_switches(tracks, start_tracks_search_time=start_tracks_search_time)
         return interests
     elif continuous:
         interests = get_interest_from_track(
