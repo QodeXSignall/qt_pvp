@@ -368,8 +368,9 @@ def find_first_stable_stop(tracks, start_index, current_dt, settings, first_inte
         if first_interest:
             logger.debug("[ДВИЖЕНИЕ ДО ОСТАНОВКИ] Не найдено, это первый трек, возвращаем None для дальнейшего запроса еще треков")
             # Но если start_time < последний (текущий трек), то возвращаем текущий
-            if (point_time-start_tracks_search_time).total_seconds() > 300:   # Если тупо нет больше треков и этот трек точно самый первый, возвращаем его
-                pass
+            if (point_time-start_tracks_search_time).total_seconds() > 300:# Если тупо нет больше треков и этот трек точно самый первый, возвращаем его
+                logger.warning(f"[ДВИЖЕНИЕ ДО ОСТАНОВКИ] Больше нет треков. Возвращаем самый первый - {point_time} ")
+                return point_time
             return None
         logger.debug(
             f"[ДВИЖЕНИЕ ДО ОСТАНОВКИ] Не найдено, взят самый первый доступный трек. Остановка длиной {stop_count} сек, началась в {tracks[stop_start_idx]['gt']}")
