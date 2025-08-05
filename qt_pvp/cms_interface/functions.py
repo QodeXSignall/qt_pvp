@@ -115,7 +115,7 @@ def find_stops(tracks):
     return stop_intervals[1:-1] if len(stop_intervals) > 2 else []
 
 
-def find_interests_by_lifting_switches(tracks, sec_before=30, sec_after=30):
+def find_interests_by_lifting_switches(tracks, sec_before=30, sec_after=30, start_tracks_search_time=None):
     loading_intervals = []
     i = 0
     first_interest = True   # Используем в случаях, когда для первого интереса не найдена начальная остановка в заданных треках
@@ -150,7 +150,7 @@ def find_interests_by_lifting_switches(tracks, sec_before=30, sec_after=30):
                 break
 
             # Находим время для фото ДО (Последнее время в окне стабильных остановок)
-            time_before = find_first_stable_stop(tracks, i, current_dt, settings, first_interest)
+            time_before = find_first_stable_stop(tracks, i, current_dt, settings, first_interest, start_tracks_search_time)
             if not time_before:
                 logger.warning(f"[BEFORE] Не найдена остановка до сработки концевика в {timestamp}")
                 if first_interest:
@@ -320,7 +320,7 @@ def fallback_photo_after_time(tracks, last_switch_index, settings, logger=None):
 
 
 
-def find_first_stable_stop(tracks, start_index, current_dt, settings, first_interest=False):
+def find_first_stable_stop(tracks, start_index, current_dt, settings, first_interest=False, start_tracks_search_time = None):
     logger.debug("Ищем движение и остановку до первого срабатывания концевика")
     cutoff_time = current_dt - datetime.timedelta(
         seconds=settings.config.getint("Interests", "MAX_LOOKBACK_SECONDS"))
@@ -366,7 +366,10 @@ def find_first_stable_stop(tracks, start_index, current_dt, settings, first_inte
     # Если цикл закончился, но серия осталась — тоже возвращаем
     if stop_count >= min_stop_duration and stop_start_idx is not None:
         if first_interest:
-            logger.debug("[ДВИЖЕНИЕ ДО ОСТАНОВКИ] Не найдено, это первый трек, возрващаем None для дальнейшего запроса еще треков")
+            logger.debug("[ДВИЖЕНИЕ ДО ОСТАНОВКИ] Не найдено, это первый трек, возвращаем None для дальнейшего запроса еще треков")
+            # Но если start_time < последний (текущий трек), то возвращаем текущий
+            if (point_time-start_tracks_search_time).total_seconds() > 300:   # Если тупо нет больше треков и этот трек точно самый первый, возвращаем его
+                pass
             return None
         logger.debug(
             f"[ДВИЖЕНИЕ ДО ОСТАНОВКИ] Не найдено, взят самый первый доступный трек. Остановка длиной {stop_count} сек, началась в {tracks[stop_start_idx]['gt']}")
@@ -567,14 +570,15 @@ def find_by_lifting_switches_depr(tracks, sec_before=30, sec_after=30):
 
 def analyze_tracks_get_interests(tracks, by_stops=False,
                                  continuous=False,
-                                 by_lifting_limit_switch=False):
+                                 by_lifting_limit_switch=False,
+                                 start_tracks_search_time=None):
     # was_stop = None
     interests = []
     if by_stops:
         interests = find_stops(tracks)
         return interests[1:-1] if len(interests) > 2 else []
     elif by_lifting_limit_switch:
-        interests = find_interests_by_lifting_switches(tracks)
+        interests = find_interests_by_lifting_switches(tracks, start_tracks_search_time)
         return interests
     elif continuous:
         interests = get_interest_from_track(

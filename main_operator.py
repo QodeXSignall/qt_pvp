@@ -45,6 +45,7 @@ class Main:
 
     def get_interests(self, reg_id, reg_info, start_time, stop_time):
         while True:
+            start_time_dt = datetime.datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
             tracks = cms_api.get_device_track_all_pages(
                 jsession=self.jsession,
                 device_id=reg_id,
@@ -56,13 +57,12 @@ class Main:
                 by_stops=reg_info["by_stops"],
                 continuous=reg_info["continuous"],
                 by_lifting_limit_switch=reg_info["by_lifting_limit_switch"],
-
+                start_tracks_search_time=start_time_dt
             )
             if "interests" in interests:
                 return interests["interests"]
             elif "error" in interests:
-                start_time = datetime.datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S") - datetime.timedelta(minutes=1)
-                start_time = start_time.strftime("%Y-%m-%d %H:%M:%S")
+                start_time = (start_time_dt - datetime.timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S")
                 logger.info(f"Теперь ищем треки с {start_time}")
 
     async def download_reg_videos(self, reg_id, chanel_id: int = None,
