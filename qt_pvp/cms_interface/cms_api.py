@@ -204,52 +204,27 @@ async def download_interest_videos(jsession, interest, chanel_id, reg_id, split=
     start_time_datetime = datetime.datetime.strptime(
         interest["start_time"], "%Y-%m-%d %H:%M:%S"
     )
-    interest["file_paths"] = []
-
-    max_attempts = 5
-    adjustment_step = 10  # сек
 
     beg_sec = interest["beg_sec"]
     end_sec = interest["end_sec"]
 
-    for attempt in range(max_attempts):
-        logger.debug(f"Попытка {attempt + 1}: beg_sec={beg_sec}, end_sec={end_sec}")
+    file_paths = await download_video(
+        jsession=jsession,
+        reg_id=reg_id,
+        channel_id=chanel_id,
+        year=start_time_datetime.year,
+        month=start_time_datetime.month,
+        day=start_time_datetime.day,
+        start_sec=beg_sec,
+        end_sec=end_sec,
+    )
 
-        response = get_video(
-            jsession=jsession,
-            device_id=reg_id,
-            chanel_id=chanel_id,
-            start_time_seconds=beg_sec,
-            end_time_seconds=end_sec,
-            year=start_time_datetime.year,
-            month=start_time_datetime.month,
-            day=start_time_datetime.day,
-        )
+    if not file_paths:
+        logger.warning(f"{reg_id}: Не удалось получить видеофайлы для интереса")
+        return None
 
-        try:
-            response_json = response.json()
-        except Exception as e:
-            logger.warning(f"Ошибка при парсинге JSON: {e}")
-            return None
-
-        logger.debug(f"Get video response: {response_json}, {response.status_code}")
-
-        if "files" in response_json and response_json["files"]:
-            for file in response_json["files"]:
-                download_task_url = file["DownTaskUrl"]
-                file_path = await wait_and_get_dwn_url(
-                    jsession=jsession,
-                    download_task_url=download_task_url
-                )
-                interest["file_paths"].append(file_path)
-            return interest
-
-        # Если не нашли файлы — расширяем интервал
-        beg_sec = max(0, beg_sec - adjustment_step)
-        end_sec = end_sec + adjustment_step
-
-    logger.warning(f"Файлы не найдены после {max_attempts} попыток на chanel_id {chanel_id}")
-    return None
+    interest["file_paths"] = file_paths
+    return interest
 
 
 
@@ -374,37 +349,65 @@ def _create_placeholder_image(output_dir: str):
 
 async def download_video(jsession, reg_id: str, channel_id: int,
                          year: int, month: int, day: int,
-                         start_sec: int, end_sec: int):
-    logger.info(
-        f"{reg_id}. Загружаем видео {year}.{month}.{day} "
-        f"c {start_sec} до {end_sec} (секунды). "
-        f"Канал {channel_id}")
+                         start_sec: int, end_sec: int,
+                         max_attempts: int = 5,
+                         adjustment_step: int = 10):
+    """
+    Загружает видео с камеры, с повторными попытками при отсутствии файлов
+    или при недоступности устройства.
+    Возвращает список путей к скачанным файлам.
+    """
     file_paths = []
-    response = get_video(
-        jsession=jsession,
-        device_id=reg_id,
-        chanel_id=channel_id,
-        start_time_seconds=start_sec,
-        end_time_seconds=end_sec,
-        year=year,
-        month=month,
-        day=day
-    )
-    response_json = response.json()
+    attempt = 0
 
-    logger.debug(
-        f"Get video response: {response_json}, {response.status_code}")
-    if "files" not in response_json:
-        logger.warning(f"Not files found on chanel_id {channel_id}")
-        return
-    files = response_json["files"]
-    for file in files:
-        download_task_url = file["DownTaskUrl"]
-        file_path = await wait_and_get_dwn_url(
+    while True:
+        attempt += 1
+        logger.debug(f"Попытка {attempt}: start_sec={start_sec}, end_sec={end_sec}")
+
+        response = get_video(
             jsession=jsession,
-            download_task_url=download_task_url)
-        file_paths.append(file_path)
-    return file_paths
+            device_id=reg_id,
+            chanel_id=channel_id,
+            start_time_seconds=start_sec,
+            end_time_seconds=end_sec,
+            year=year,
+            month=month,
+            day=day
+        )
+
+        try:
+            response_json = response.json()
+        except Exception as e:
+            logger.warning(f"Ошибка при парсинге JSON: {e}")
+            return None
+
+        logger.debug(f"Get video response: {response_json}, {response.status_code}")
+
+        # Устройство не в сети — ждём и пробуем снова
+        if response_json.get("result") == 32 and "Device is not online" in response_json.get("message", ""):
+            logger.warning(f"Устройство {reg_id} не в сети. Ждём и повторяем попытку...")
+            await asyncio.sleep(5)
+            continue
+
+        # Файлы найдены
+        if "files" in response_json and response_json["files"]:
+            for file in response_json["files"]:
+                download_task_url = file["DownTaskUrl"]
+                file_path = await wait_and_get_dwn_url(
+                    jsession=jsession,
+                    download_task_url=download_task_url
+                )
+                file_paths.append(file_path)
+            return file_paths
+
+        # Нет файлов, но устройство в сети — расширяем интервал
+        start_sec = max(0, start_sec - adjustment_step)
+        end_sec += adjustment_step
+
+        if attempt >= max_attempts:
+            logger.warning(f"Файлы не найдены после {attempt} попыток (устройство в сети).")
+            return None
+
 
 
 def send_cmsv6_message(dev_idno: str, jsession: str, text: str,
