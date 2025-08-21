@@ -1,9 +1,12 @@
 from qt_pvp.logger import logger
 from qt_pvp import settings
+from qt_pvp.functions import get_reg_info
 import datetime
 import requests
 import functools
 import asyncio
+
+io_to_reg_map = {1: 20, 2: 21, 3: 22, 4: 23}
 
 
 def int_to_32bit_binary(number):
@@ -115,10 +118,25 @@ def find_stops(tracks):
     return stop_intervals[1:-1] if len(stop_intervals) > 2 else []
 
 
-def find_interests_by_lifting_switches(tracks, sec_before=30, sec_after=30, start_tracks_search_time=None):
+def find_interests_by_lifting_switches(tracks, sec_before=30, sec_after=30, start_tracks_search_time=None, reg_id=None):
     loading_intervals = []
     i = 0
     first_interest = True   # Используем в случаях, когда для первого интереса не найдена начальная остановка в заданных треках
+    reg_cfg = get_reg_info(reg_id) if reg_id else None
+    euro_alarm_cfg = None
+    kgo_alarm_cfg = None
+    try:
+        euro_alarm_cfg = int((reg_cfg or {}).get("euro_container_alarm", 4))
+    except Exception:
+        euro_alarm_cfg = 4
+    try:
+        kgo_alarm_cfg_val = (reg_cfg or {}).get("kgo_container_alarm")
+        kgo_alarm_cfg = int(kgo_alarm_cfg_val) if kgo_alarm_cfg_val is not None else None
+    except Exception:
+        kgo_alarm_cfg = None
+
+    euro_bit_idx = io_to_reg_map.get(euro_alarm_cfg, 23)
+    kgo_bit_idx = io_to_reg_map.get(kgo_alarm_cfg, None) if kgo_alarm_cfg is not None else None
     while i < len(tracks):
         track = tracks[i]
         s1 = track.get("s1")
@@ -130,14 +148,16 @@ def find_interests_by_lifting_switches(tracks, sec_before=30, sec_after=30, star
 
         i += 1
         min_speed_for_switch_detect = settings.config.getint("Interests", "MIN_SPEED_FOR_SWITCH_DETECT")
-        if bits[22] == '1' or bits[23] == '1':
-            cargo_type = "Лодка" if int(bits[22]) else "Контейнер"
-            logger.info(f"[SWITCH] Срабатывание концевика в {timestamp}, IO3={bits[22]}, IO4={bits[23]}")
+        euro_on = bits[euro_bit_idx] == '1'
+        kgo_on = (kgo_bit_idx is not None) and (bits[kgo_bit_idx] == '1')
+        if euro_on or kgo_on:
+            cargo_type = "КГО" if kgo_on else "Контейнер"
+            logger.info(f"[SWITCH] Срабатывание концевика в {timestamp}, EuroIO(bit {euro_bit_idx})={bits[euro_bit_idx]}" + (f", KGOIO(bit {kgo_bit_idx})={bits[kgo_bit_idx]}" if kgo_bit_idx is not None else ""))
             if track.get("sp") > min_speed_for_switch_detect:
                 logger.debug(f"[SWITCH] Игнор: скорость {track.get('sp')} > {min_speed_for_switch_detect}")
                 continue
 
-            if int(bits[22]):
+            if kgo_on:
                 sec_before = 120
 
             logger.debug(f"[SWITCH] Принято: {cargo_type} в {timestamp}")
@@ -160,10 +180,10 @@ def find_interests_by_lifting_switches(tracks, sec_before=30, sec_after=30, star
             lifting_end_idx = i
             last_switch_index = i
 
-            if bits[22] == '1':
-                switch_events.append({"datetime": timestamp, "switch": 22})
-            if bits[23] == '1':
-                switch_events.append({"datetime": timestamp, "switch": 23})
+            if euro_on:
+                switch_events.append({"datetime": timestamp, "switch": euro_bit_idx})
+            if kgo_on:
+                switch_events.append({"datetime": timestamp, "switch": kgo_bit_idx})
 
             # В этом цикле мы перебираем треки и ищем трек, когда погрузка закочена (по скорости и концевику)
             logger.debug("Теперь ищем когда машина поехала после погрузки.")
@@ -179,16 +199,16 @@ def find_interests_by_lifting_switches(tracks, sec_before=30, sec_after=30, star
                 next_bits = list(bin(next_s1_int & 0xFFFFFFFF)[2:].zfill(32))
                 next_bits.reverse()
 
-                logger.debug(f"Продолжение анализа треков после первого концевика. {next_track.get('gt')}, IO3={next_bits[22]}, IO4={next_bits[23]}, sp={next_spd}")
+                logger.debug(f"Продолжение анализа треков после первого концевика. {next_track.get('gt')}, EuroIO(bit {euro_bit_idx})={next_bits[euro_bit_idx]}" + (f", KGOIO(bit {kgo_bit_idx})={next_bits[kgo_bit_idx]}" if kgo_bit_idx is not None else "") + f", sp={next_spd}")
 
                 # Проверяем скорость и концевики, если машина поехала, то выходим из цикла
-                if next_bits[22] == '1' or next_bits[23] == '1':
+                if next_bits[euro_bit_idx] == '1' or (kgo_bit_idx is not None and next_bits[kgo_bit_idx] == '1'):
                     lifting_end_idx += 1
                     sw_time = next_track.get("gt")
-                    if next_bits[22] == '1':
-                        switch_events.append({"datetime": sw_time, "switch": 22})
-                    if next_bits[23] == '1':
-                        switch_events.append({"datetime": sw_time, "switch": 23})
+                    if next_bits[euro_bit_idx] == '1':
+                        switch_events.append({"datetime": sw_time, "switch": euro_bit_idx})
+                    if kgo_bit_idx is not None and next_bits[kgo_bit_idx] == '1':
+                        switch_events.append({"datetime": sw_time, "switch": kgo_bit_idx})
                     last_switch_index = lifting_end_idx
                 elif next_spd <= 5:
                     lifting_end_idx += 1
@@ -574,14 +594,15 @@ def find_by_lifting_switches_depr(tracks, sec_before=30, sec_after=30):
 def analyze_tracks_get_interests(tracks, by_stops=False,
                                  continuous=False,
                                  by_lifting_limit_switch=False,
-                                 start_tracks_search_time=None):
+                                 start_tracks_search_time=None,
+                                 reg_id=None):
     # was_stop = None
     interests = []
     if by_stops:
         interests = find_stops(tracks)
         return interests[1:-1] if len(interests) > 2 else []
     elif by_lifting_limit_switch:
-        interests = find_interests_by_lifting_switches(tracks, start_tracks_search_time=start_tracks_search_time)
+        interests = find_interests_by_lifting_switches(tracks, start_tracks_search_time=start_tracks_search_time, reg_id=reg_id)
         return interests
     elif continuous:
         interests = get_interest_from_track(

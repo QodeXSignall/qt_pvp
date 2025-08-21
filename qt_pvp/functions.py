@@ -199,6 +199,27 @@ def get_regs_states(**kwargs):
         states = get_json_states()["regs"]
     return states
 
+
+def _ensure_alarms_fields(regs: dict, reg_id: str = None) -> bool:
+    changed = False
+    target_ids = [reg_id] if reg_id else list(regs.keys())
+    for rid in target_ids:
+        reg = regs.get(rid) or {}
+        if "euro_container_alarm" not in reg:
+            reg["euro_container_alarm"] = 4
+            changed = True
+        regs[rid] = reg
+    return changed
+
+
+def ensure_alarms_structure(reg_id: str = None):
+    with json_states_mutex:
+        states = get_json_states()
+        regs = states.get("regs", {})
+        if _ensure_alarms_fields(regs, reg_id):
+            states["regs"] = regs
+            save_new_states_to_file(states)
+
 def get_interests(reg_id):
     reg_info = get_reg_info(reg_id)
     if not reg_info:
@@ -224,6 +245,7 @@ def clean_interests(reg_id):
 
 
 def get_reg_info(reg_id):
+    ensure_alarms_structure(reg_id)
     regs = get_regs_states()
     if reg_id not in regs.keys():
         return
@@ -245,6 +267,8 @@ def create_new_reg(reg_id):
             "by_door_limit_switch": 0,
             "by_lifting_limit_switch": 1,
             "continuous": 0,
+            "EuroContainerAlarm": 4,
+            # KGOAlarm — опционален, не добавляем по умолчанию
         }
         info["regs"][reg_id] = new_reg_info
         save_new_states_to_file(info)
