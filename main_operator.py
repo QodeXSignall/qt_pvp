@@ -57,7 +57,8 @@ class Main:
                 by_stops=reg_info["by_stops"],
                 continuous=reg_info["continuous"],
                 by_lifting_limit_switch=reg_info["by_lifting_limit_switch"],
-                start_tracks_search_time=start_time_dt
+                start_tracks_search_time=start_time_dt,
+                reg_id=reg_id
             )
             if "interests" in interests:
                 return interests["interests"]
