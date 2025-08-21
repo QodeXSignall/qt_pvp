@@ -71,7 +71,7 @@ def concatenate_videos(converted_files, output_abs_name):
     # Создаем временный файл со списком файлов для объединения
     logger.debug(
         f"Конкатенация файлов {converted_files}")
-    with open(concat_list_path, 'w') as list_file:
+    with open(concat_list_path, 'w', encoding='utf-8') as list_file:
         for file in converted_files:
             list_file.write(f"file '{file}'\n")
     # Команда для объединения через FFMPEG
@@ -267,8 +267,7 @@ def create_new_reg(reg_id):
             "by_door_limit_switch": 0,
             "by_lifting_limit_switch": 1,
             "continuous": 0,
-            "EuroContainerAlarm": 4,
-            # KGOAlarm — опционален, не добавляем по умолчанию
+            "euro_container_alarm": 4,
         }
         info["regs"][reg_id] = new_reg_info
         save_new_states_to_file(info)
