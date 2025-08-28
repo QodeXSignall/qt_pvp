@@ -36,29 +36,19 @@ def login():
 def get_video(jsession, device_id: str, start_time_seconds: int,
               end_time_seconds: int, year: int, month: int, day: int,
               chanel_id: int = 0, fileattr: int = 2):
-    params = {"DevIDNO": device_id,
-              "LOC": 1,
-              "CHN": chanel_id,
-              "YEAR": year,
-              "MON": month,
-              "DAY": day,
-              "RECTYPE": -1,
-              "FILEATTR": fileattr,
-              "BEG": start_time_seconds,
-              "END": end_time_seconds,
-              "ARM1": 0,
-              "ARM2": 0,
-              "RES": 0,  # RES 0
-              "STREAM": -1,  # STREAM -1
-              "STORE": 0,
-              "jsession": jsession,
-              "DownType": 2}
-    url = f"{settings.cms_host}/StandardApiAction_getVideoFileInfo.action?"
+    params = {
+        "DevIDNO": device_id, "LOC": 1, "CHN": chanel_id,
+        "YEAR": year, "MON": month, "DAY": day,
+        "RECTYPE": -1, "FILEATTR": fileattr,
+        "BEG": start_time_seconds, "END": end_time_seconds,
+        "ARM1": 0, "ARM2": 0, "RES": 0, "STREAM": -1, "STORE": 0,
+        "jsession": jsession, "DownType": 2
+    }
+    url = f"{settings.cms_host}/StandardApiAction_getVideoFileInfo.action"
     logger.debug(f"Getting request {url}. \nParams: {params}")
-    return requests.get(
-        url,
-        params=params,
-        timeout=4)
+    # connect=4s, read=8s — меньше ложных таймаутов при ответе
+    return requests.get(url, params=params, timeout=(4, 8))
+
 
 
 async def fetch_photo_url(data_list, chn_values):
@@ -380,19 +370,23 @@ def _create_placeholder_image(output_dir: str):
 async def download_video(jsession, reg_id: str, channel_id: int,
                          year: int, month: int, day: int,
                          start_sec: int, end_sec: int,
-                         max_attempts: int = 5,
-                         adjustment_step: int = 10):
+                         max_attempts: int = 8,
+                         adjustment_step: int = 15):
     """
-    Загружает видео с камеры, с повторными попытками при отсутствии файлов
-    или при недоступности устройства.
-    Возвращает список путей к скачанным файлам.
+    Пытается получить список файлов для заданного временного окна.
+    - Сетевые сбои/занятость CMS ретраятся ДЕКОРАТОРОМ бесконечно с бэкоффом.
+    - Если устройство офлайн (result==32) — ждём и пробуем снова, attempts НЕ растёт.
+    - Если ответ валидный, но файлов нет — расширяем интервал и считаем попытку.
     """
-    file_paths = []
+    file_paths: list[str] = []
     attempt = 0
 
+    # границы суток (чтобы не вылезти)
+    start_limit = 0
+    end_limit = 24 * 60 * 60 - 1
+
     while True:
-        attempt += 1
-        logger.debug(f"Попытка {attempt}: start_sec={start_sec}, end_sec={end_sec}")
+        logger.debug(f"Попытка {attempt + 1}: start_sec={start_sec}, end_sec={end_sec}")
 
         response = get_video(
             jsession=jsession,
@@ -405,37 +399,44 @@ async def download_video(jsession, reg_id: str, channel_id: int,
             day=day
         )
 
+        # декоратор уже гарантировал, что тут есть валидный JSON и 200 (или осмысленный ответ)
         try:
             response_json = response.json()
         except Exception as e:
-            logger.warning(f"Ошибка при парсинге JSON: {e}")
-            return None
+            # избыточная защита; теоретически не должны сюда попадать
+            logger.warning(f"Ошибка при парсинге JSON (post-decorator): {e}")
+            await asyncio.sleep(2)
+            continue
 
         logger.debug(f"Get video response: {response_json}, {response.status_code}")
 
-        # Устройство не в сети — ждём и пробуем снова
-        if response_json.get("result") == 32 and "Device is not online" in response_json.get("message", ""):
-            logger.warning(f"Устройство {reg_id} не в сети. Ждём и повторяем попытку...")
+        result = response_json.get("result")
+        message = response_json.get("message", "")
+        files = response_json.get("files") or []
+
+        # 1) Устройство офлайн — просто ждём до успеха (attempt НЕ растёт)
+        if result == 32 and "Device is not online" in message:
+            logger.warning(f"Устройство {reg_id} не в сети. Ждём 5с и пробуем снова...")
             await asyncio.sleep(5)
             continue
 
-        # Файлы найдены
-        if "files" in response_json and response_json["files"]:
-            for file in response_json["files"]:
+        # 2) Файлы есть — запускаем выдачу URL-ов
+        if files:
+            for file in files:
                 download_task_url = file["DownTaskUrl"]
-                file_path = await wait_and_get_dwn_url(
-                    jsession=jsession,
-                    download_task_url=download_task_url
-                )
+                file_path = await wait_and_get_dwn_url(jsession=jsession, download_task_url=download_task_url)
                 file_paths.append(file_path)
             return file_paths
 
-        # Нет файлов, но устройство в сети — расширяем интервал
-        start_sec = max(0, start_sec - adjustment_step)
-        end_sec += adjustment_step
+        # 3) Валидный ответ, но файлов нет — расширяем окно и считаем попытку
+        attempt += 1
+
+        # Расширяем окно с ограничениями суток
+        start_sec = max(start_limit, start_sec - adjustment_step)
+        end_sec = min(end_limit, end_sec + adjustment_step)
 
         if attempt >= max_attempts:
-            logger.warning(f"Файлы не найдены после {attempt} попыток (устройство в сети).")
+            logger.warning(f"Файлы не найдены после {attempt} попыток (устройство в сети/ответ валиден).")
             return None
 
 

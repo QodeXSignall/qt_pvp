@@ -5,6 +5,7 @@ import datetime
 import requests
 import functools
 import asyncio
+import time
 
 io_to_reg_map = {1: 20, 2: 21, 3: 22, 4: 23}
 
@@ -685,23 +686,50 @@ def cms_data_get_decorator_async(max_retries=3, delay=1):
 
 
 def cms_data_get_decorator(tag='execute func'):
-    # Main body
     def decorator(func):
         def wrapper(*args, **kwargs):
+            backoff = 1.0  # сек
             while True:
                 try:
                     response = func(*args, **kwargs)
-                    result = response.json()["result"]
-                    if result == 24:
+
+                    # если HTTP не 200 — тоже ретраим
+                    if response.status_code != 200:
+                        logger.warning(f"CMS HTTP {response.status_code}; retry in {backoff:.1f}s")
+                        time.sleep(backoff)
+                        backoff = min(backoff * 1.5, 10.0)
                         continue
-                    else:
-                        return response
+
+                    # попытка распарсить JSON
+                    try:
+                        data = response.json()
+                    except Exception as je:
+                        logger.warning(f"CMS JSON parse error: {je}; retry in {backoff:.1f}s")
+                        time.sleep(backoff)
+                        backoff = min(backoff * 1.5, 10.0)
+                        continue
+
+                    # Специфичные коды CMS
+                    result = data.get("result")
+                    # 24 — «busy/processing» у части прошивок — просто ждём ещё
+                    if result == 24:
+                        logger.debug(f"CMS busy (24); retry in {backoff:.1f}s")
+                        time.sleep(backoff)
+                        backoff = min(backoff * 1.5, 10.0)
+                        continue
+
+                    # Успех или осмысленный ответ — отдаём наверх;
+                    # пусть уже вызывающая логика решает, что делать с result=0 и т.п.
+                    return response
+
                 except (requests.exceptions.ReadTimeout,
-                        requests.exceptions.ConnectTimeout) as err:
-                    logger.warning("Connection problem with CMS")
+                        requests.exceptions.ConnectTimeout,
+                        requests.exceptions.ConnectionError) as err:
+                    logger.warning(f"Connection problem with CMS: {err}; retry in {backoff:.1f}s")
+                    time.sleep(backoff)
+                    backoff = min(backoff * 1.5, 10.0)
 
         return wrapper
-
     return decorator
 
 
