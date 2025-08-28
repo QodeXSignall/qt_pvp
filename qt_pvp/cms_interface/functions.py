@@ -340,63 +340,78 @@ def fallback_photo_after_time(tracks, last_switch_index, settings, logger=None):
 
 
 
-def find_first_stable_stop(tracks, start_index, current_dt, settings, first_interest=False, start_tracks_search_time = None):
+def find_first_stable_stop(
+    tracks,
+    start_index,
+    current_dt,
+    settings,
+    first_interest=False,
+    start_tracks_search_time=None,  # оставляем для совместимости
+):
     logger.debug("Ищем движение и остановку до первого срабатывания концевика")
+
     cutoff_time = current_dt - datetime.timedelta(
         seconds=settings.config.getint("Interests", "MAX_LOOKBACK_SECONDS"))
     min_stop_speed = settings.config.getint("Interests", "MIN_STOP_SPEED")
-    min_stop_duration = settings.config.getint("Interests",
-                                               "MIN_STOP_DURATION_SEC")
+    min_stop_duration_sec = settings.config.getint("Interests", "MIN_STOP_DURATION_SEC")
 
     stop_start_idx = None
-    stop_count = 0
-
+    stop_end_idx = None  # край «позже» в серии
     j = start_index
+
+    def ts(idx: int) -> datetime.datetime:
+        return datetime.datetime.strptime(tracks[idx]["gt"], "%Y-%m-%d %H:%M:%S")
+
     while j >= 0:
-        track = tracks[j]
-        point_time = datetime.datetime.strptime(track.get("gt"),
-                                                "%Y-%m-%d %H:%M:%S")
-        spd = track.get("sp") or 0
+        point_time = ts(j)
+        spd = int(tracks[j].get("sp") or 0)
 
         logger.debug(
-            f"[СКАНИРОВАНИЕ] j={j}, время={point_time}, скорость={spd}, текущая_длина_остановки={stop_count}")
+            f"[СКАНИРОВАНИЕ] j={j}, время={point_time}, скорость={spd}, "
+            f"серия={None if stop_start_idx is None else (stop_start_idx, stop_end_idx)}"
+        )
 
         if point_time < cutoff_time:
-            logger.debug(
-                f"[ОБРЫВ] Точка {point_time} за пределами окна {cutoff_time}")
+            logger.debug(f"[ОБРЫВ] Точка {point_time} за пределами окна {cutoff_time}")
             break
 
-        if int(spd) <= min_stop_speed:
-            stop_count += 1
-            logger.debug(
-                f"[ОСТАНОВКА] скорость={spd} <= {min_stop_speed}, длина серии={stop_count}")
-            stop_start_idx = j
+        if spd <= min_stop_speed:
+            if stop_start_idx is None:
+                stop_start_idx = j
+                stop_end_idx = j
+            else:
+                stop_start_idx = j  # двигаем начало серии назад
+            logger.debug(f"[ОСТАНОВКА] скорость={spd} <= {min_stop_speed}, серия=({stop_start_idx}->{stop_end_idx})")
         else:
-            if stop_count >= min_stop_duration and stop_start_idx is not None:
-                logger.debug(
-                    f"[ДВИЖЕНИЕ ДО ОСТАНОВКИ] Найдено. Остановка длиной {stop_count} сек, началась в {tracks[stop_start_idx]['gt']}")
-                return tracks[stop_start_idx].get("gt")
-
-            # сброс серии
+            # серия закончилась — оцениваем длительность
+            if stop_start_idx is not None:
+                dur = (ts(stop_end_idx) - ts(stop_start_idx)).total_seconds()
+                if dur >= min_stop_duration_sec:
+                    logger.debug(
+                        f"[ДВИЖЕНИЕ ДО ОСТАНОВКИ] Найдено. Длительность {dur:.0f} сек, "
+                        f"начало {tracks[stop_start_idx]['gt']}"
+                    )
+                    return tracks[stop_start_idx]["gt"]
+            # сбрасываем серию
             stop_start_idx = None
-            stop_count = 0
+            stop_end_idx = None
 
         j -= 1
 
-    # Если цикл закончился, но серия осталась — тоже возвращаем
-    if stop_count >= min_stop_duration and stop_start_idx is not None:
-        if first_interest:
-            logger.debug("[ДВИЖЕНИЕ ДО ОСТАНОВКИ] Не найдено, это первый трек, возвращаем None для дальнейшего запроса еще треков")
-            # Но если start_time < последний (текущий трек), то возвращаем текущий
-            first_track_timestamp = tracks[0].get("gt")
-            first_track_datetime = datetime.datetime.strptime(first_track_timestamp, "%Y-%m-%d %H:%M:%S")
-            if (first_track_datetime-start_tracks_search_time).total_seconds() > 300:# Если тупо нет больше треков и этот трек точно самый первый, возвращаем его
-                logger.warning(f"[ДВИЖЕНИЕ ДО ОСТАНОВКИ] Больше нет треков. Возвращаем самый первый - {point_time} ")
-                return first_track_timestamp
-            return None
-        logger.debug(
-            f"[ДВИЖЕНИЕ ДО ОСТАНОВКИ] Не найдено, взят самый первый доступный трек. Остановка длиной {stop_count} сек, началась в {tracks[stop_start_idx]['gt']}")
-        return tracks[stop_start_idx].get("gt")
+    # Выход из цикла: либо дошли до начала массива, либо упёрлись в cutoff
+    if stop_start_idx is not None:
+        dur = (ts(stop_end_idx) - ts(stop_start_idx)).total_seconds()
+        if dur >= min_stop_duration_sec:
+            first_track_dt = ts(0)
+            # Если это первый интерес и серия начинается ровно с нулевого индекса,
+            # и мы ещё не вышли за cutoff — просим догрузить (вернём None).
+            if first_interest and stop_start_idx == 0 and first_track_dt >= cutoff_time:
+                logger.debug(
+                    "[ДОГРУЗКА] Серия достаточна, но упёрлись в начало куска и ещё не прошли cutoff — нужна догрузка"
+                )
+                return None
+            logger.debug(f"[ФИНАЛ] Длительность {dur:.0f} сек, начало {tracks[stop_start_idx]['gt']}")
+            return tracks[stop_start_idx]["gt"]
 
     logger.warning("[ОСТАНОВКА НЕ НАЙДЕНА]")
     return None

@@ -44,8 +44,24 @@ class Main:
             self.devices_in_progress.remove(reg_id)
 
     def get_interests(self, reg_id, reg_info, start_time, stop_time):
+        max_extra_pulls = 8  # не более 8 доп. минут назад
+        pulls = 0
+
+        stop_time_dt = datetime.datetime.strptime(stop_time, "%Y-%m-%d %H:%M:%S")
+        max_lookback = settings.config.getint("Interests", "MAX_LOOKBACK_SECONDS")
+        hard_min_start = (stop_time_dt - datetime.timedelta(seconds=max_lookback + 60))  # +60 сек запас
+
         while True:
             start_time_dt = datetime.datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
+
+            # Жёсткая защита от бесконечного ухода назад
+            if pulls > max_extra_pulls or start_time_dt <= hard_min_start:
+                logger.warning(
+                    f"[GUARD] Достигнут предел догрузок (pulls={pulls}) или уйдём раньше hard_min_start={hard_min_start}. "
+                    f"Останавливаемся."
+                )
+                return []  # или {'interests': []}, по контракту вызывающего кода
+
             tracks = cms_api.get_device_track_all_pages(
                 jsession=self.jsession,
                 device_id=reg_id,
@@ -60,9 +76,11 @@ class Main:
                 start_tracks_search_time=start_time_dt,
                 reg_id=reg_id
             )
+
             if "interests" in interests:
                 return interests["interests"]
             elif "error" in interests:
+                pulls += 1
                 start_time = (start_time_dt - datetime.timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S")
                 logger.info(f"Теперь ищем треки с {start_time}")
 
