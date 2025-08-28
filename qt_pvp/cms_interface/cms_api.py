@@ -45,9 +45,14 @@ def get_video(jsession, device_id: str, start_time_seconds: int,
         "jsession": jsession, "DownType": 2
     }
     url = f"{settings.cms_host}/StandardApiAction_getVideoFileInfo.action"
+    headers = {
+        "User-Agent": "qt_pvp/1.0",
+        "Connection": "close",   # тушим keep-alive, меньше висячих коннектов
+    }
     logger.debug(f"Getting request {url}. \nParams: {params}")
-    # connect=4s, read=8s — меньше ложных таймаутов при ответе
-    return requests.get(url, params=params, timeout=(4, 8))
+    # Таймауты раздельно: connect=5s, read=25s
+    return requests.get(url, params=params, headers=headers, timeout=(5, 25))
+
 
 
 
@@ -371,39 +376,31 @@ async def download_video(jsession, reg_id: str, channel_id: int,
                          year: int, month: int, day: int,
                          start_sec: int, end_sec: int,
                          max_attempts: int = 8,
-                         adjustment_step: int = 15):
-    """
-    Пытается получить список файлов для заданного временного окна.
-    - Сетевые сбои/занятость CMS ретраятся ДЕКОРАТОРОМ бесконечно с бэкоффом.
-    - Если устройство офлайн (result==32) — ждём и пробуем снова, attempts НЕ растёт.
-    - Если ответ валидный, но файлов нет — расширяем интервал и считаем попытку.
-    """
-    file_paths: list[str] = []
+                         adjustment_step: int = 30):
+    file_paths = []
     attempt = 0
-
-    # границы суток (чтобы не вылезти)
     start_limit = 0
-    end_limit = 24 * 60 * 60 - 1
+    end_limit = 24*60*60 - 1
 
     while True:
         logger.debug(f"Попытка {attempt + 1}: start_sec={start_sec}, end_sec={end_sec}")
 
-        response = get_video(
-            jsession=jsession,
-            device_id=reg_id,
-            chanel_id=channel_id,
-            start_time_seconds=start_sec,
-            end_time_seconds=end_sec,
-            year=year,
-            month=month,
-            day=day
+        # <<< ВАЖНО: синхронный get_video едет в отдельный поток
+        response = await asyncio.to_thread(
+            get_video,
+            jsession,
+            reg_id,
+            start_sec,
+            end_sec,
+            year,
+            month,
+            day,
+            channel_id,  # chanel_id
         )
 
-        # декоратор уже гарантировал, что тут есть валидный JSON и 200 (или осмысленный ответ)
         try:
             response_json = response.json()
         except Exception as e:
-            # избыточная защита; теоретически не должны сюда попадать
             logger.warning(f"Ошибка при парсинге JSON (post-decorator): {e}")
             await asyncio.sleep(2)
             continue
@@ -414,30 +411,32 @@ async def download_video(jsession, reg_id: str, channel_id: int,
         message = response_json.get("message", "")
         files = response_json.get("files") or []
 
-        # 1) Устройство офлайн — просто ждём до успеха (attempt НЕ растёт)
+        # Устройство офлайн — бьёмся до успеха (attempt НЕ растёт)
         if result == 32 and "Device is not online" in message:
             logger.warning(f"Устройство {reg_id} не в сети. Ждём 5с и пробуем снова...")
             await asyncio.sleep(5)
             continue
 
-        # 2) Файлы есть — запускаем выдачу URL-ов
+        # Файлы есть — скачиваем
         if files:
-            for file in files:
-                download_task_url = file["DownTaskUrl"]
-                file_path = await wait_and_get_dwn_url(jsession=jsession, download_task_url=download_task_url)
+            for f in files:
+                file_path = await wait_and_get_dwn_url(
+                    jsession=jsession,
+                    download_task_url=f["DownTaskUrl"]
+                )
                 file_paths.append(file_path)
             return file_paths
 
-        # 3) Валидный ответ, но файлов нет — расширяем окно и считаем попытку
+        # Валидный ответ, но файлов нет — небольшая пауза на индексацию, потом расширяем окно
+        await asyncio.sleep(2.0)
         attempt += 1
-
-        # Расширяем окно с ограничениями суток
         start_sec = max(start_limit, start_sec - adjustment_step)
         end_sec = min(end_limit, end_sec + adjustment_step)
 
         if attempt >= max_attempts:
             logger.warning(f"Файлы не найдены после {attempt} попыток (устройство в сети/ответ валиден).")
             return None
+
 
 
 
