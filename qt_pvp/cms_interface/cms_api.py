@@ -1,4 +1,6 @@
 from qt_pvp.cms_interface import functions
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from qt_pvp.logger import logger
 from qt_pvp import settings
 import numpy as np
@@ -121,19 +123,47 @@ def get_gps(jsession):
 
 @functions.cms_data_get_decorator()
 def get_device_track(jsession: str, device_id: str, start_time: str,
-                     stop_time: str, page: int = None):
-    params = {"jsession": jsession,
-              "devIdno": device_id,
-              "begintime": start_time,
-              "endtime": stop_time,
-              "currentPage": page
-              }
-    print(params)
-    response = requests.get(
-        f"{settings.cms_host}/StandardApiAction_queryTrackDetail.action?",
-        params=params,
-        timeout=60)
-    return response
+                     stop_time: str, page: int | None = None):
+    params = {
+        "jsession": jsession,
+        "devIdno": device_id,
+        "begintime": start_time,
+        "endtime": stop_time,
+    }
+    if page is not None:
+        params["currentPage"] = page  # только если есть
+
+    url = f"{settings.cms_host}/StandardApiAction_queryTrackDetail.action"
+
+    # Ретраи на обрывы/502-504; идем без keep-alive
+    retry = Retry(
+        total=5, connect=3, read=3,
+        backoff_factor=0.5,
+        status_forcelist=[502, 503, 504],
+        allowed_methods=["GET"],
+        raise_on_status=False
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    sess = requests.Session()
+    sess.mount("http://", adapter)
+    sess.mount("https://", adapter)
+
+    headers = {
+        "User-Agent": "qt_pvp/1.0",
+        "Connection": "close",  # отключаем keep-alive
+    }
+
+    try:
+        response = sess.get(
+            url,
+            params=params,
+            headers=headers,
+            timeout=(5, 60)  # connect, read
+        )
+        response.raise_for_status()
+        return response
+    finally:
+        sess.close()
 
 
 @functions.cms_data_get_decorator()

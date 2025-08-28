@@ -3,3 +3,5 @@ webdavclient3
 aiohttp
 ffmpeg-python
 opencv-python
+urllib3
+numpy
