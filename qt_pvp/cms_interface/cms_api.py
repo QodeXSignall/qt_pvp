@@ -372,70 +372,76 @@ def _create_placeholder_image(output_dir: str):
     return output_path
 
 
-async def download_video(jsession, reg_id: str, channel_id: int,
-                         year: int, month: int, day: int,
-                         start_sec: int, end_sec: int,
-                         max_attempts: int = 4,
-                         adjustment_step: int = 30):
+async def download_video(
+    jsession, reg_id: str, channel_id: int,
+    year: int, month: int, day: int,
+    start_sec: int, end_sec: int,
+    max_attempts: int = 4,
+    adjustment_step: int = 30,
+):
+    assert adjustment_step >= 0, "adjustment_step должен быть >= 0"
+    base_start, base_end = int(start_sec), int(end_sec)
+    start_limit, end_limit = 0, 24*60*60 - 1
+
     file_paths = []
     attempt = 0
-    start_limit = 0
-    end_limit = 24*60*60 - 1
 
-    while True:
-        logger.debug(f"Попытка {attempt + 1}: start_sec={start_sec}, end_sec={end_sec}")
+    while attempt < max_attempts:
+        # окно как функция попытки (0 — без расширения)
+        delta = adjustment_step * attempt
+        cur_start = max(start_limit, base_start - delta)
+        cur_end   = min(end_limit,   base_end + delta)
 
-        # <<< ВАЖНО: синхронный get_video едет в отдельный поток
+        logger.debug(
+            f"Попытка {attempt+1}/{max_attempts}: "
+            f"window=[{cur_start}..{cur_end}] (base=[{base_start}..{base_end}], Δ={delta})"
+        )
+
         response = await asyncio.to_thread(
-            get_video,
-            jsession,
-            reg_id,
-            start_sec,
-            end_sec,
-            year,
-            month,
-            day,
-            channel_id,  # chanel_id
+            get_video, jsession, reg_id, cur_start, cur_end,
+            year, month, day, channel_id
         )
 
         try:
             response_json = response.json()
         except Exception as e:
-            logger.warning(f"Ошибка при парсинге JSON (post-decorator): {e}")
+            logger.warning(f"Парсинг JSON не удался: {e}. Ждём и повторим ту же попытку.")
             await asyncio.sleep(2)
-            continue
-
-        logger.debug(f"Get video response: {response_json}, {response.status_code}")
+            continue  # attempt не растёт => то же окно
 
         result = response_json.get("result")
         message = response_json.get("message", "")
         files = response_json.get("files") or []
 
-        # Устройство офлайн — бьёмся до успеха (attempt НЕ растёт)
-        if result == 32 and "Device is not online" in message:
-            logger.warning(f"Устройство {reg_id} не в сети. Ждём 5с и пробуем снова...")
-            await asyncio.sleep(5)
-            continue
+        logger.debug(f"Get video result={result}, msg={message!r}, files={len(files)}")
 
-        # Файлы есть — скачиваем
+        # устройство офлайн — не повышаем attempt, оставляем то же окно
+        if result == 32 and "Device is not online" in message:
+            logger.warning(f"{reg_id}: устройство офлайн. Ждём 5с и пробуем снова (та же попытка).")
+            await asyncio.sleep(5)
+            continue  # attempt прежний
+
         if files:
             for f in files:
-                file_path = await wait_and_get_dwn_url(
-                    jsession=jsession,
-                    download_task_url=f["DownTaskUrl"]
-                )
-                file_paths.append(file_path)
-            return file_paths
+                url = f.get("DownTaskUrl")
+                if not url:
+                    logger.warning(f"{reg_id}: у файла нет DownTaskUrl: {f}")
+                    continue
+                file_path = await wait_and_get_dwn_url(jsession=jsession, download_task_url=url)
+                if file_path:
+                    file_paths.append(file_path)
+            return file_paths or None
 
-        # Валидный ответ, но файлов нет — небольшая пауза на индексацию, потом расширяем окно
-        await asyncio.sleep(2.0)
+        # валидный ответ, но файлов нет — расширяем окно на следующей попытке
         attempt += 1
-        start_sec = max(start_limit, start_sec - adjustment_step)
-        end_sec = min(end_limit, end_sec + adjustment_step)
+        await asyncio.sleep(2)
 
-        if attempt >= max_attempts:
-            logger.warning(f"Файлы не найдены после {attempt} попыток (устройство в сети/ответ валиден).")
-            return None
+    logger.warning(
+        f"{reg_id}: файлы не найдены после {attempt} попыток. "
+        f"Последнее окно было [{cur_start}..{cur_end}]"
+    )
+    return None
+
 
 
 

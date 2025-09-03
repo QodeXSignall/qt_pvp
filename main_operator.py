@@ -50,8 +50,6 @@ class Main:
         while True:
             start_time_dt = datetime.datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
 
-            # >>> УБИРАЕМ преждевременный GUARD по времени здесь <<<
-
             tracks = cms_api.get_device_track_all_pages(
                 jsession=self.jsession,
                 device_id=reg_id,
@@ -392,12 +390,6 @@ class Main:
                 return True
 
 
-def get_interests(reg_id, start_time, end_time):
-    d = Main()
-    reg_info = main_funcs.get_reg_info(
-        reg_id)
-    interests = d.get_interests(reg_id, reg_info, start_time, end_time)
-    return interests
 
 if __name__ == "__main__":
     d = Main()
