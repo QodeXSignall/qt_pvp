@@ -395,7 +395,10 @@ def process_video_file(file_path, output_file_path):
     logger.info(f"Формат: {format_name}")
     logger.info(f"Видеокодек: {video_codec}")
 
-    """
+    if not settings.config.getboolean("Video", "convert_required"):
+        logger.info("Конвертация отключена в конфиге, пропуск...")
+        return file_path
+
     # Определяем, нужно ли конвертировать
     need_conversion = False
     if format_name != 'mp4':
@@ -414,7 +417,6 @@ def process_video_file(file_path, output_file_path):
         #output_file = os.path.splitext(file_path)[0] + "_converted.mp4"
         convert_to_mp4_h264(file_path, output_file_path)
         return output_file_path
-    """
     return file_path
 
 
