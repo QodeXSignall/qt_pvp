@@ -1,27 +1,24 @@
-from main_operator import main_funcs
+import unittest, asyncio
 from main_operator import Main
-import unittest
-
+from qt_pvp.cms_interface import cms_api
 
 class TestCase(unittest.TestCase):
-    def get_interests(self, reg_id, start_time, end_time):
-        d = Main()
-        reg_info = main_funcs.get_reg_info(
-            reg_id)
-        interests = d.get_interests(reg_id, reg_info, start_time, end_time)
-        return interests
+    def test_get_img(self):
+        async def runner():
+            d = Main()
+            return await cms_api.download_video(
+                d.jsession,
+                reg_id="108411",
+                channel_id=2,
+                year=2025,
+                month=9,
+                day=1,
+                start_sec=59400,
+                end_sec=59400,
 
-    def test_get_interests(self):
-        reg_id = "018270348452"
-        #reg_id = "K630AX702"
-        interests = self.get_interests(
-            reg_id,
-            #"2025-05-18 08:20:00", "2025-05-18 09:50:00"
-            "2025-05-16 10:40:00", "2025-05-16 10:59:00"
             )
-        print("Interests")
-        for interest in interests:
-            print(interest)
+        res = asyncio.run(runner())
+        print("\nRES", res)
 
 if __name__ == '__main__':
     unittest.main()

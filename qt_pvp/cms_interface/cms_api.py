@@ -375,7 +375,7 @@ def _create_placeholder_image(output_dir: str):
 async def download_video(jsession, reg_id: str, channel_id: int,
                          year: int, month: int, day: int,
                          start_sec: int, end_sec: int,
-                         max_attempts: int = 8,
+                         max_attempts: int = 4,
                          adjustment_step: int = 30):
     file_paths = []
     attempt = 0

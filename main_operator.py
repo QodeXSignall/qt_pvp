@@ -17,7 +17,7 @@ import os
 class Main:
     def __init__(self, output_format="mp4"):
         self.jsession = cms_api.login().json()["jsession"]
-        threading.Thread(target=main_funcs.video_remover_cycle).start()
+        #threading.Thread(target=main_funcs.video_remover_cycle).start()
         self.output_format = output_format
         self.devices_in_progress = []
 
@@ -346,6 +346,12 @@ class Main:
             await asyncio.to_thread(main_funcs.concatenate_videos,
                                     final_videos_paths_list,
                                     final_interest_video_name)
+            if converted_videos and settings.config.getboolean("General", "del_source_video_after_upload"):
+                logger.debug("Удаляем конвертированные файлы до конкатенации")
+                for file in final_videos_paths_list:
+                    if os.path.exists(file):
+                        logger.debug(f"Удаляем {file}")
+                        os.remove(file)
         elif len(final_videos_paths_list) == 1:
             output_video_path = final_videos_paths_list[
                 0]  # Если одно видео, просто используем его
