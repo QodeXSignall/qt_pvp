@@ -20,6 +20,7 @@ class Main:
         #threading.Thread(target=main_funcs.video_remover_cycle).start()
         self.output_format = output_format
         self.devices_in_progress = []
+        self.TIME_FMT = "%Y-%m-%d %H:%M:%S"
 
     def video_ready_trigger(self, *args, **kwargs):
         logger.info("Dummy trigger activated")
@@ -95,157 +96,116 @@ class Main:
             logger.info(f"{reg_id} недоступен.")
             return
 
-        # Получаем информацию о регистраторе
-        reg_info = main_funcs.get_reg_info(
-            reg_id) or main_funcs.create_new_reg(reg_id)
+        # Информация о регистраторе
+        reg_info = main_funcs.get_reg_info(reg_id) or main_funcs.create_new_reg(reg_id)
         logger.debug(f"Информация о регистраторе {reg_id} - {reg_info}")
         if not reg_info:
             main_funcs.create_new_reg(reg_id)
-        chanel_id = reg_info.get("chanel_id",
-                                 0)  # Если нет ID канала, ставим 0
+        chanel_id = reg_info.get("chanel_id", 0)  # Если нет ID канала, ставим 0
 
+        # Временные границы окна
+        TIME_FMT = "%Y-%m-%d %H:%M:%S"
         start_time = start_time or main_funcs.get_reg_last_upload_time(reg_id)
-
-        end_time = end_time or begin_time.strftime("%Y-%m-%d %H:%M:%S")
+        end_time = end_time or begin_time.strftime(TIME_FMT)
 
         # Разбиваем длинные интервалы на отрезки
         time_difference = (
-                datetime.datetime.strptime(end_time, "%Y-%m-%d %H:%M:%S") -
-                datetime.datetime.strptime(start_time,
-                                           "%Y-%m-%d %H:%M:%S")).total_seconds()
-        if time_difference > settings.config.getint("Interests",
-                                                    "DOWNLOADING_INTERVAL") * 60:
-            end_time = (datetime.datetime.strptime(start_time,
-                                                   "%Y-%m-%d %H:%M:%S") +
-                        datetime.timedelta(
-                            seconds=settings.config.getint("Interests",
-                                                           "DOWNLOADING_INTERVAL") * 60)).strftime(
-                "%Y-%m-%d %H:%M:%S")
+                datetime.datetime.strptime(end_time, TIME_FMT) -
+                datetime.datetime.strptime(start_time, TIME_FMT)
+        ).total_seconds()
+
+        max_span = settings.config.getint("Interests", "DOWNLOADING_INTERVAL") * 60
+        if time_difference > max_span:
+            end_time = (
+                    datetime.datetime.strptime(start_time, TIME_FMT) +
+                    datetime.timedelta(seconds=max_span)
+            ).strftime(TIME_FMT)
         else:
-            logger.debug(f"f{reg_id}. Time difference is too short "
-                         f"({time_difference} сек.)")
+            logger.debug(f"f{reg_id}. Time difference is too short ({time_difference} сек.)")
             return
+
         logger.info(f"{reg_id} Начало: {start_time}, Конец: {end_time}")
 
         # Определяем интересные интервалы
         interests = self.get_interests(reg_id, reg_info, start_time, end_time)
         if not interests:
             logger.info(f"{reg_id}: Интересы не найдены в интервале {start_time} - {end_time}")
-            main_funcs.save_new_reg_last_upload_time(reg_id,
-                                                     end_time)
+            main_funcs.save_new_reg_last_upload_time(reg_id, end_time)
             return
+
         logger.info(f"{reg_id}: Найдено {len(interests)} интересов")
         interests = main_funcs.merge_overlapping_interests(interests)
+
+        # Единая стратегия расширения окна — теперь задаём здесь,
+        # а применяет её download_video (через download_interest_videos).
+        adjustment_sequence = (0, 15, 30, 45)
+
         for interest in interests:
             logger.info(f"Работаем с интересом {interest}")
             interest_cloud_folder = cloud_uploader.create_interest_folder_path(
                 interest_name=interest["name"],
-                dest_directory=settings.CLOUD_PATH)
-            # Загружаем видео
+                dest_directory=settings.CLOUD_PATH
+            )
+
             logger.debug(f"{reg_id}: Начинаем скачивание видео для интереса {interest['name']}")
-            interest = await cms_api.download_interest_videos(
+            enriched = await cms_api.download_interest_videos(
                 self.jsession,
                 interest,
                 chanel_id,
-                reg_id=reg_id)
-            if not interest:
+                reg_id=reg_id,
+                adjustment_sequence=adjustment_sequence,
+            )
+
+            if not enriched:
                 logger.warning(f"{reg_id}: Не удалось получить видеофайлы для интереса")
                 continue
 
-            interest["cloud_folder"] = interest_cloud_folder
-            #await self.process_and_upload_videos_async(reg_id, interest)
-            interest["cloud_folder"] = interest_cloud_folder
+            enriched["cloud_folder"] = interest_cloud_folder
 
-            # Попытки: сначала без расширения, потом 15/30/45 сек
-            max_attempts = 3
-            buffer_intervals = [15, 30, 45]
-            attempt = 0
-            success = False
-
-            while attempt <= max_attempts:
-                try:
-                    # При первой попытке — без изменений
-                    if attempt == 0:
-                        current_interest = interest
-                    else:
-                        buffer = buffer_intervals[attempt - 1]
-                        logger.warning(f"{reg_id}: Повторная попытка #{attempt} с интервалом ±{buffer} сек.")
-                        current_interest = interest.copy()
-                        current_interest["start_time"] = (
-                            datetime.datetime.strptime(interest["start_time"], "%Y-%m-%d %H:%M:%S") -
-                            datetime.timedelta(seconds=buffer)
-                        ).strftime("%Y-%m-%d %H:%M:%S")
-                        current_interest["end_time"] = (
-                            datetime.datetime.strptime(interest["end_time"], "%Y-%m-%d %H:%M:%S") +
-                            datetime.timedelta(seconds=buffer)
-                        ).strftime("%Y-%m-%d %H:%M:%S")
-
-                        current_interest = await cms_api.download_interest_videos(
-                            self.jsession,
-                            current_interest,
-                            chanel_id,
-                            reg_id=reg_id)
-
-                        if not current_interest:
-                            logger.error(f"{reg_id}: Скачивание видео не удалось на попытке #{attempt}")
-                            attempt += 1
-                            continue
-
-                        current_interest["cloud_folder"] = interest_cloud_folder
-
-                    await self.process_and_upload_videos_async(reg_id, current_interest)
-                    success = True
-                    break  # Успех — выходим
-
-                except Exception as e:
-                    logger.error(f"{reg_id}: Ошибка при попытке #{attempt}: {e}")
-                    attempt += 1
-
-            if not success:
-                logger.error(f"{reg_id}: Все {max_attempts + 1} попыток обработать интерес {interest['name']} завершились неудачно.")
-                break
-
+            # Обработка и загрузка
+            await self.process_and_upload_videos_async(reg_id, enriched)
 
             if settings.config.getboolean("General", "pics_before_after"):
-                # Запускаем скачивание фото и обработку видео ПАРАЛЛЕЛЬНО
-                logger.debug("Получаем кадры ДО и ПОСЛЕ загрузки")
-                frames_before = await cms_api.get_frames(
-                    jsession=self.jsession, reg_id=reg_id,
-                    year=interest["year"], month=interest["month"],
-                    day=interest["day"],
-                    start_sec=interest["photo_before_sec"],
-                    end_sec=interest["photo_before_sec"] + 5)
-                logger.debug(f"Кадры до: {frames_before}")
-                frames_after = await cms_api.get_frames(
-                    jsession=self.jsession, reg_id=reg_id,
-                    year=interest["year"], month=interest["month"],
-                    day=interest["day"],
-                    start_sec=interest["photo_after_sec"],
-                    end_sec=interest["photo_after_sec"] + 5)
-                logger.debug(f"Фото до - {frames_before}. "
-                             f"Фото после - {frames_after}")
-                # Проводим анализ качества фото
-                quality_report = self.analyze_frames_quality(
-                    frames_before + frames_after)
-                logger.info(f"Анализ качества фото: {quality_report}")
-                upload_status = await asyncio.to_thread(
-                    cloud_uploader.create_pics, interest["cloud_folder"],
-                    frames_before, frames_after
-                )
+                await self.upload_frames_before_after(reg_id, enriched)
+            cloud_uploader.upload_dict_as_json_to_cloud(
+                data=enriched["report"],
+                remote_folder_path=enriched["cloud_folder"]
+            )
 
-                if upload_status:
-                    all_frames = frames_before + frames_after
-                    for frame in all_frames:
-                        logger.info(
-                            f"{reg_id}: Загрузка прошла успешно. Удаляем локальные фото-файлы ({frame}).")
-                        os.remove(frame)
-                cloud_uploader.upload_dict_as_json_to_cloud(
-                    data=interest["report"],
-                    remote_folder_path=interest["cloud_folder"])
-        # Обновляем `last_upload_time`
-        last_interest_time = self.get_last_interest_datetime(
-            interests) if interests else end_time
+        # Обновляем last_upload_time
+        last_interest_time = self.get_last_interest_datetime(interests) if interests else end_time
         main_funcs.save_new_reg_last_upload_time(reg_id, last_interest_time)
+
+    async def upload_frames_before_after(self, reg_id, enriched):
+        logger.debug("Получаем кадры ДО и ПОСЛЕ загрузки")
+        frames_before = await cms_api.get_frames(
+            jsession=self.jsession, reg_id=reg_id,
+            year=enriched["year"], month=enriched["month"],
+            day=enriched["day"],
+            start_sec=enriched["photo_before_sec"],
+            end_sec=enriched["photo_before_sec"] + 5
+        )
+        logger.debug(f"Кадры до: {frames_before}")
+        frames_after = await cms_api.get_frames(
+            jsession=self.jsession, reg_id=reg_id,
+            year=enriched["year"], month=enriched["month"],
+            day=enriched["day"],
+            start_sec=enriched["photo_after_sec"],
+            end_sec=enriched["photo_after_sec"] + 5
+        )
+        logger.debug(f"Фото до - {frames_before}. Фото после - {frames_after}")
+
+        quality_report = self.analyze_frames_quality(frames_before + frames_after)
+        logger.info(f"Анализ качества фото: {quality_report}")
+
+        upload_status = await asyncio.to_thread(
+            cloud_uploader.create_pics, enriched["cloud_folder"],
+            frames_before, frames_after
+        )
+        if upload_status:
+            for frame in (frames_before + frames_after):
+                logger.info(f"{reg_id}: Загрузка прошла успешно. Удаляем локальные фото-файлы ({frame}).")
+                os.remove(frame)
 
     def analyze_frames_quality(self, frames: list):
         """
@@ -388,7 +348,6 @@ class Main:
         for device_dict in devices_online:
             if reg_id == device_dict["did"]:
                 return True
-
 
 
 if __name__ == "__main__":

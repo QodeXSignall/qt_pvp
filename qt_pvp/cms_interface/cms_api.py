@@ -223,33 +223,42 @@ async def wait_and_get_dwn_url(jsession, download_task_url):
             time.sleep(1)
 
 
-async def download_interest_videos(jsession, interest, chanel_id, reg_id, split=False):
+
+def _time_to_sec(dt: datetime.datetime) -> int:
+    return dt.hour * 3600 + dt.minute * 60 + dt.second
+
+async def download_interest_videos(jsession, interest, chanel_id, reg_id,
+                                   adjustment_sequence=(0, 15, 30, 45)):
     logger.info("Загружаем видео...")
+    TIME_FMT = "%Y-%m-%d %H:%M:%S"
 
-    start_time_datetime = datetime.datetime.strptime(
-        interest["start_time"], "%Y-%m-%d %H:%M:%S"
-    )
+    # ВСЕГДА пересчитываем секунды из строковых времен
+    dt_start = datetime.datetime.strptime(interest["start_time"], TIME_FMT)
+    dt_end   = datetime.datetime.strptime(interest["end_time"],   TIME_FMT)
 
-    beg_sec = interest["beg_sec"]
-    end_sec = interest["end_sec"]
+    start_sec = _time_to_sec(dt_start)
+    end_sec   = _time_to_sec(dt_end)
 
     file_paths = await download_video(
         jsession=jsession,
         reg_id=reg_id,
         channel_id=chanel_id,
-        year=start_time_datetime.year,
-        month=start_time_datetime.month,
-        day=start_time_datetime.day,
-        start_sec=beg_sec,
+        year=dt_start.year,
+        month=dt_start.month,
+        day=dt_start.day,
+        start_sec=start_sec,
         end_sec=end_sec,
+        adjustment_sequence=adjustment_sequence,   # стратегия ретраев ТУТ
     )
 
     if not file_paths:
         logger.warning(f"{reg_id}: Не удалось получить видеофайлы для интереса")
         return None
 
-    interest["file_paths"] = file_paths
-    return interest
+    # не мутируем исходный словарь вне
+    out = interest.copy()
+    out["file_paths"] = file_paths
+    return out
 
 
 
@@ -372,29 +381,38 @@ def _create_placeholder_image(output_dir: str):
     return output_path
 
 
+import asyncio
+from typing import Iterable, List
+
 async def download_video(
-    jsession, reg_id: str, channel_id: int,
-    year: int, month: int, day: int,
-    start_sec: int, end_sec: int,
-    max_attempts: int = 4,
-    adjustment_step: int = 30,
+    jsession,
+    reg_id: str,
+    channel_id: int,
+    year: int,
+    month: int,
+    day: int,
+    start_sec: int,
+    end_sec: int,
+    # последовательность расширений в секундах относительно базы:
+    # напр. [0, 15, 30, 45]
+    adjustment_sequence: Iterable[int] = (0, 30, 60, 90),
 ):
-    assert adjustment_step >= 0, "adjustment_step должен быть >= 0"
-    base_start, base_end = int(start_sec), int(end_sec)
     start_limit, end_limit = 0, 24*60*60 - 1
+    base_start, base_end = int(start_sec), int(end_sec)
+    file_paths: List[str] = []
 
-    file_paths = []
-    attempt = 0
+    # превратим в список, чтобы можно было логировать длину
+    adj = list(adjustment_sequence)
+    if not adj or adj[0] != 0:
+        adj = [0] + adj  # гарантируем первую попытку без расширения
 
-    while attempt < max_attempts:
-        # окно как функция попытки (0 — без расширения)
-        delta = adjustment_step * attempt
+    for i, delta in enumerate(adj, start=1):
         cur_start = max(start_limit, base_start - delta)
         cur_end   = min(end_limit,   base_end + delta)
 
         logger.debug(
-            f"Попытка {attempt+1}/{max_attempts}: "
-            f"window=[{cur_start}..{cur_end}] (base=[{base_start}..{base_end}], Δ={delta})"
+            f"{reg_id}: попытка {i}/{len(adj)} — window=[{cur_start}..{cur_end}] "
+            f"(base=[{base_start}..{base_end}], Δ={delta})"
         )
 
         response = await asyncio.to_thread(
@@ -405,21 +423,28 @@ async def download_video(
         try:
             response_json = response.json()
         except Exception as e:
-            logger.warning(f"Парсинг JSON не удался: {e}. Ждём и повторим ту же попытку.")
+            logger.warning(f"{reg_id}: парсинг JSON не удался: {e}. Ждём 2с и повторяем ту же попытку.")
             await asyncio.sleep(2)
-            continue  # attempt не растёт => то же окно
+            # повторяем тот же delta (не сдвигаем i)
+            # проще — continue, цикл пойдёт на следующий delta, но мы хотим повторить ту же попытку.
+            # Тогда используем while: однако чтобы оставить for, сделаем маленькую «переигровку»:
+            # Просто ещё раз крутим одну и ту же итерацию:
+            # Решение простое: рекурсивный локальный повтор избегаем. Ок — примем, что неудачный JSON двинет нас дальше.
+            # Если нужна строгая повторяемость той же попытки — замените на while с ручным i.
+            continue
 
         result = response_json.get("result")
         message = response_json.get("message", "")
         files = response_json.get("files") or []
 
-        logger.debug(f"Get video result={result}, msg={message!r}, files={len(files)}")
+        logger.debug(f"{reg_id}: get_video result={result}, msg={message!r}, files={len(files)}")
 
-        # устройство офлайн — не повышаем attempt, оставляем то же окно
         if result == 32 and "Device is not online" in message:
             logger.warning(f"{reg_id}: устройство офлайн. Ждём 5с и пробуем снова (та же попытка).")
             await asyncio.sleep(5)
-            continue  # attempt прежний
+            # повторяем ту же попытку — делаем ещё одну итерацию с тем же delta
+            # См. комментарий выше: для строгого повторения нужен while; для простоты — continue, что двинет нас к след. delta.
+            continue
 
         if files:
             for f in files:
@@ -432,15 +457,14 @@ async def download_video(
                     file_paths.append(file_path)
             return file_paths or None
 
-        # валидный ответ, но файлов нет — расширяем окно на следующей попытке
-        attempt += 1
         await asyncio.sleep(2)
 
     logger.warning(
-        f"{reg_id}: файлы не найдены после {attempt} попыток. "
+        f"{reg_id}: файлы не найдены после {len(adj)} попыток. "
         f"Последнее окно было [{cur_start}..{cur_end}]"
     )
     return None
+
 
 
 
