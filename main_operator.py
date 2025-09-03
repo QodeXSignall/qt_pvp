@@ -183,7 +183,7 @@ class Main:
             year=enriched["year"], month=enriched["month"],
             day=enriched["day"],
             start_sec=enriched["photo_before_sec"],
-            end_sec=enriched["photo_before_sec"] + 5
+            end_sec=enriched["photo_before_sec"] + 10
         )
         logger.debug(f"Кадры до: {frames_before}")
         frames_after = await cms_api.get_frames(
@@ -191,7 +191,7 @@ class Main:
             year=enriched["year"], month=enriched["month"],
             day=enriched["day"],
             start_sec=enriched["photo_after_sec"],
-            end_sec=enriched["photo_after_sec"] + 5
+            end_sec=enriched["photo_after_sec"] + 10
         )
         logger.debug(f"Фото до - {frames_before}. Фото после - {frames_after}")
 
