@@ -83,24 +83,43 @@ def split_time_range_to_dicts(start_time, end_time, interval):
 def concatenate_videos(converted_files, output_abs_name):
     logger.debug(f"Конкатенация файлов {converted_files}")
 
-    # Формируем список для stdin
-    concat_input = "".join([f"file '{file}'\n" for file in converted_files])
+    # Нормализуем пути: Windows любит прямые слэши в concat-списке
+    def norm(p: str) -> str:
+        return os.path.abspath(p).replace("\\", "/")
 
-    # Команда для объединения
-    concatenate_command = [
-        'ffmpeg', '-y', '-f', 'concat', '-safe', '0',
-        '-i', '-', '-c', 'copy', output_abs_name
+    # Экранируем одинарные кавычки по правилам concat-demuxer
+    def esc(p: str) -> str:
+        return p.replace("'", r"'\''")
+
+    concat_input = "".join([f"file '{esc(norm(p))}'\n" for p in converted_files])
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-hide_banner", "-loglevel", "warning",
+        # КЛЮЧЕВОЕ: whitelist для stdin-источника concat
+        "-protocol_whitelist", "file,pipe,crypto,data",
+        "-f", "concat", "-safe", "0",
+        "-i", "-",                             # читаем список из stdin
+        "-c", "copy",
+        output_abs_name,
     ]
 
-    logger.debug(f"Команда на конкатенацию: {' '.join(concatenate_command)}")
+    logger.debug(f"Команда на конкатенацию: {' '.join(cmd)}")
 
-    subprocess.run(
-        concatenate_command,
-        input=concat_input.encode('utf-8'),
-        check=True
+    # Ловим stderr, чтобы при ошибке увидеть причину в логах
+    proc = subprocess.run(
+        cmd,
+        input=concat_input.encode("utf-8"),
+        capture_output=True,
+        check=False,
     )
+    if proc.returncode != 0:
+        logger.error("FFmpeg concat failed (code %s). Stderr:\n%s",
+                     proc.returncode, proc.stderr.decode(errors="ignore"))
+        # Если захочешь — здесь можно сделать fallback на временный list.txt
+        raise subprocess.CalledProcessError(proc.returncode, cmd, proc.stdout, proc.stderr)
 
-    logger.debug(f"Успешно объединено. Результат: {output_abs_name}.")
+    logger.debug(f"Успешно объединено. Результат: {output_abs_name}")
 
 
 def convert_video_file(input_video_path: str, output_dir: str = None,
