@@ -96,6 +96,8 @@ class Main:
             logger.info(f"{reg_id} недоступен.")
             return
 
+
+
         # Информация о регистраторе
         reg_info = main_funcs.get_reg_info(reg_id) or main_funcs.create_new_reg(reg_id)
         logger.debug(f"Информация о регистраторе {reg_id} - {reg_info}")
@@ -103,6 +105,10 @@ class Main:
             main_funcs.create_new_reg(reg_id)
         chanel_id = reg_info.get("chanel_id", 0)  # Если нет ID канала, ставим 0
 
+        ignore = reg_info.get("ignore", False)
+        if ignore:
+            f"Игнорируем регистратор {reg_id}"
+            return
         # Временные границы окна
         TIME_FMT = "%Y-%m-%d %H:%M:%S"
         start_time = start_time or main_funcs.get_reg_last_upload_time(reg_id)
@@ -339,7 +345,6 @@ class Main:
             devices_online = self.get_devices_online()
             for device_dict in devices_online:
                 reg_id = device_dict["did"]
-                print(reg_id)
                 await self.operate_device(reg_id)
             await asyncio.sleep(5)
 

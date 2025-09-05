@@ -200,7 +200,7 @@ def find_interests_by_lifting_switches(tracks, sec_before=30, sec_after=30, star
                 next_bits = list(bin(next_s1_int & 0xFFFFFFFF)[2:].zfill(32))
                 next_bits.reverse()
 
-                logger.debug(f"Продолжение анализа треков после первого концевика. {next_track.get('gt')}, EuroIO(bit {euro_bit_idx})={next_bits[euro_bit_idx]}" + (f", KGOIO(bit {kgo_bit_idx})={next_bits[kgo_bit_idx]}" if kgo_bit_idx is not None else "") + f", sp={next_spd}")
+                logger.debug(f"Ищем момент когда машина поехала после погрузки. {next_track.get('gt')}, EuroIO(bit {euro_bit_idx})={next_bits[euro_bit_idx]}" + (f", KGOIO(bit {kgo_bit_idx})={next_bits[kgo_bit_idx]}" if kgo_bit_idx is not None else "") + f", sp={next_spd}")
 
                 # Проверяем скорость и концевики, если машина поехала, то выходим из цикла
                 if next_bits[euro_bit_idx] == '1' or (kgo_bit_idx is not None and next_bits[kgo_bit_idx] == '1'):

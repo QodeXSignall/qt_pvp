@@ -66,24 +66,26 @@ def split_time_range_to_dicts(start_time, end_time, interval):
 
 
 def concatenate_videos(converted_files, output_abs_name):
-    concat_list_path = os.path.join(os.path.dirname(output_abs_name),
-                                    'concat_list.txt')
-    # Создаем временный файл со списком файлов для объединения
-    logger.debug(
-        f"Конкатенация файлов {converted_files}")
-    with open(concat_list_path, 'w', encoding='utf-8') as list_file:
-        for file in converted_files:
-            list_file.write(f"file '{file}'\n")
-    # Команда для объединения через FFMPEG
-    concatenate_command = ['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i',
-                           concat_list_path, '-c', 'copy',
-                           output_abs_name]
-    logger.debug(
-        f"Команда на конкатенацию {' '.join(concatenate_command)}")
-    subprocess.run(concatenate_command, check=True)
-    logger.debug(f"Успешно объединено. "
-                 f"Результат: {output_abs_name}.")
-    os.remove(concat_list_path)
+    logger.debug(f"Конкатенация файлов {converted_files}")
+
+    # Формируем список для stdin
+    concat_input = "".join([f"file '{file}'\n" for file in converted_files])
+
+    # Команда для объединения
+    concatenate_command = [
+        'ffmpeg', '-y', '-f', 'concat', '-safe', '0',
+        '-i', '-', '-c', 'copy', output_abs_name
+    ]
+
+    logger.debug(f"Команда на конкатенацию: {' '.join(concatenate_command)}")
+
+    subprocess.run(
+        concatenate_command,
+        input=concat_input.encode('utf-8'),
+        check=True
+    )
+
+    logger.debug(f"Успешно объединено. Результат: {output_abs_name}.")
 
 
 def convert_video_file(input_video_path: str, output_dir: str = None,
