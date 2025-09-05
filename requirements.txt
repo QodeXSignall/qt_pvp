@@ -5,3 +5,4 @@ ffmpeg-python
 opencv-python
 urllib3
 numpy
+portalocker
