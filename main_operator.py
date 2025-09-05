@@ -170,17 +170,20 @@ class Main:
             await self.process_and_upload_videos_async(reg_id, enriched)
 
             if settings.config.getboolean("General", "pics_before_after"):
-                await self.upload_frames_before_after(reg_id, enriched)
+                upload_status = await self.upload_frames_before_after(reg_id, enriched)
+                if upload_status["upload_status"]:
+                    for frame in upload_status["frames"]:
+                        logger.info(f"{reg_id}: Загрузка прошла успешно. Удаляем локальные фото-файлы ({frame}).")
+
             cloud_uploader.upload_dict_as_json_to_cloud(
                 data=enriched["report"],
                 remote_folder_path=enriched["cloud_folder"]
             )
 
+            main_funcs.save_new_reg_last_upload_time(reg_id, interest["end_time"])
+
         logger.info(f"{reg_id}. Все интересы обработаны.")
 
-        # Обновляем last_upload_time
-        last_interest_time = self.get_last_interest_datetime(interests) if interests else end_time
-        main_funcs.save_new_reg_last_upload_time(reg_id, last_interest_time)
 
     async def upload_frames_before_after(self, reg_id, enriched):
         logger.debug("Получаем кадры ДО и ПОСЛЕ загрузки")
@@ -208,10 +211,8 @@ class Main:
             cloud_uploader.create_pics, enriched["cloud_folder"],
             frames_before, frames_after
         )
-        if upload_status:
-            for frame in (frames_before + frames_after):
-                logger.info(f"{reg_id}: Загрузка прошла успешно. Удаляем локальные фото-файлы ({frame}).")
-                os.remove(frame)
+        return {"upload_status": upload_status, "frames_before": frames_before, "frames_after": frames_after}
+
 
     def analyze_frames_quality(self, frames: list):
         """
@@ -248,27 +249,30 @@ class Main:
         )
 
         # Дожидаемся завершения обеих задач
-        output_video_path = await video_task
+        result = await video_task
 
-        if not output_video_path:
+        if not result["output_video_path"]:
             logger.warning(
-                f"{reg_id}: Нечего выгружать на облако ({output_video_path}).")
+                f"{reg_id}: Нечего выгружать на облако.")
             return
 
         # Загружаем видео
         logger.info(
             f"{reg_id}: Загружаем видео {interest_name} в облако.")
         upload_status = await asyncio.to_thread(
-            cloud_uploader.upload_file, output_video_path,
+            cloud_uploader.upload_file, result["output_video_path"],
             interest["cloud_folder"]
         )
 
         if upload_status:
             logger.info(f"{reg_id}: Загрузка прошла успешно.")
             if settings.config.getboolean("General", "del_source_video_after_upload"):
-                if os.path.exists(output_video_path):
-                    logger.info(f"{reg_id}: Удаляем локальный файл ({output_video_path}).")
-                    os.remove(output_video_path)
+                if os.path.exists(result["output_video_path"]):
+                    logger.info(f"{reg_id}: Удаляем локальный файл ({result["output_video_path"]}).")
+                    os.remove(result["output_video_path"])
+                    for file_path in result["files_to_delete"]:
+                        logger.debug(f"Удаляем {file_path}")
+                        os.remove(file_path)
                 interest_temp_folder = os.path.join(settings.TEMP_FOLDER,
                                            interest_name)
                 if os.path.exists(interest_temp_folder):
@@ -287,7 +291,8 @@ class Main:
         final_interest_video_name = os.path.join(
             settings.INTERESTING_VIDEOS_FOLDER,
             f"{interest_name}.{self.output_format}")
-
+        result = {"final_interest_video_name": final_interest_video_name,
+                  "files_to_delete": []}
         converted_videos = []
         for video_path in file_paths:
             logger.debug(f"Работаем с {video_path}")
@@ -311,11 +316,10 @@ class Main:
                                     final_videos_paths_list,
                                     final_interest_video_name)
             if converted_videos and settings.config.getboolean("General", "del_source_video_after_upload"):
-                logger.debug("Удаляем конвертированные файлы до конкатенации")
+                logger.debug("Конвертированные файлы исходники перед конкатенацией добавляем в список удаления")
                 for file in final_videos_paths_list:
                     if os.path.exists(file):
-                        logger.debug(f"Удаляем {file}")
-                        os.remove(file)
+                        result["files_to_delete"].append(file)
         elif len(final_videos_paths_list) == 1:
             output_video_path = final_videos_paths_list[
                 0]  # Если одно видео, просто используем его
@@ -325,15 +329,15 @@ class Main:
                 logger.error(f"Ошибка при попытке использовать видео {output_video_path}. Файл не найден.")
         else:
             logger.warning(f"{reg_id}: После обработки не осталось видео.")
-            return None  # Возвращаем None, если видео не обработано
+            result["final_interest_video_name"] = None
+            return result
 
         if converted_videos and settings.config.getboolean("General", "del_source_video_after_upload"):
-            logger.debug("Удаляем исходные файлы до конвертации")
+            logger.debug("Исходные файлы до конвертации добавляем в список удаления")
             for file in file_paths:
                 if os.path.exists(file):
-                    logger.debug(f"Удаляем {file}")
-                    os.remove(file)
-        return final_interest_video_name
+                    result["files_to_delete"].append(file)
+        return result
 
     def get_last_interest_datetime(self, interests):
         last_interest = interests[-1]

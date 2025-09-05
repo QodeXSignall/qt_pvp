@@ -29,6 +29,7 @@ def _default_new_reg_info():
         "by_lifting_limit_switch": 1,
         "continuous": 0,
         "euro_container_alarm": 4,
+        "kgo_container_alarm": 3
     }
 
 def unzip_archives_in_directory(input_dir, output_dir):
