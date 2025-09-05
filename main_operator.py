@@ -271,8 +271,9 @@ class Main:
                     logger.info(f"{reg_id}: Удаляем локальный файл ({result["output_video_path"]}).")
                     os.remove(result["output_video_path"])
                     for file_path in result["files_to_delete"]:
-                        logger.debug(f"Удаляем {file_path}")
-                        os.remove(file_path)
+                        if os.path.exists(file_path):
+                            logger.debug(f"Удаляем {file_path}")
+                            os.remove(file_path)
                 interest_temp_folder = os.path.join(settings.TEMP_FOLDER,
                                            interest_name)
                 if os.path.exists(interest_temp_folder):
