@@ -291,7 +291,7 @@ class Main:
         final_interest_video_name = os.path.join(
             settings.INTERESTING_VIDEOS_FOLDER,
             f"{interest_name}.{self.output_format}")
-        result = {"final_interest_video_name": final_interest_video_name,
+        result = {"output_video_path": final_interest_video_name,
                   "files_to_delete": []}
         converted_videos = []
         for video_path in file_paths:
@@ -329,7 +329,7 @@ class Main:
                 logger.error(f"Ошибка при попытке использовать видео {output_video_path}. Файл не найден.")
         else:
             logger.warning(f"{reg_id}: После обработки не осталось видео.")
-            result["final_interest_video_name"] = None
+            result["output_video_path"] = None
             return result
 
         if converted_videos and settings.config.getboolean("General", "del_source_video_after_upload"):
