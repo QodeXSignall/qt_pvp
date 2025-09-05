@@ -81,45 +81,39 @@ def split_time_range_to_dicts(start_time, end_time, interval):
 
 
 def concatenate_videos(converted_files, output_abs_name):
+    # Уникальное имя временного файла
+    concat_list_path = os.path.join(
+        os.path.dirname(output_abs_name),
+        f"concat_list_{uuid.uuid4().hex}.txt"
+    )
+
     logger.debug(f"Конкатенация файлов {converted_files}")
 
-    # Нормализуем пути: Windows любит прямые слэши в concat-списке
-    def norm(p: str) -> str:
-        return os.path.abspath(p).replace("\\", "/")
+    try:
+        # Пишем список файлов в temp-файл
+        with open(concat_list_path, "w", encoding="utf-8") as f:
+            for file in converted_files:
+                f.write(f"file '{file}'\n")
 
-    # Экранируем одинарные кавычки по правилам concat-demuxer
-    def esc(p: str) -> str:
-        return p.replace("'", r"'\''")
+        # Команда ffmpeg
+        concatenate_command = [
+            "ffmpeg", "-y",
+            "-f", "concat", "-safe", "0",
+            "-i", concat_list_path,
+            "-c", "copy", output_abs_name
+        ]
 
-    concat_input = "".join([f"file '{esc(norm(p))}'\n" for p in converted_files])
+        logger.debug(f"Команда на конкатенацию: {' '.join(concatenate_command)}")
 
-    cmd = [
-        "ffmpeg", "-y",
-        "-hide_banner", "-loglevel", "warning",
-        # КЛЮЧЕВОЕ: whitelist для stdin-источника concat
-        "-protocol_whitelist", "file,pipe,crypto,data",
-        "-f", "concat", "-safe", "0",
-        "-i", "-",                             # читаем список из stdin
-        "-c", "copy",
-        output_abs_name,
-    ]
+        subprocess.run(concatenate_command, check=True)
 
-    logger.debug(f"Команда на конкатенацию: {' '.join(cmd)}")
-
-    # Ловим stderr, чтобы при ошибке увидеть причину в логах
-    proc = subprocess.run(
-        cmd,
-        input=concat_input.encode("utf-8"),
-        capture_output=True,
-        check=False,
-    )
-    if proc.returncode != 0:
-        logger.error("FFmpeg concat failed (code %s). Stderr:\n%s",
-                     proc.returncode, proc.stderr.decode(errors="ignore"))
-        # Если захочешь — здесь можно сделать fallback на временный list.txt
-        raise subprocess.CalledProcessError(proc.returncode, cmd, proc.stdout, proc.stderr)
-
-    logger.debug(f"Успешно объединено. Результат: {output_abs_name}")
+        logger.debug(f"Успешно объединено. Результат: {output_abs_name}.")
+    finally:
+        # Удаляем временный файл
+        try:
+            os.remove(concat_list_path)
+        except OSError:
+            pass
 
 
 def convert_video_file(input_video_path: str, output_dir: str = None,
