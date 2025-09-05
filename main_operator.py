@@ -96,8 +96,6 @@ class Main:
             logger.info(f"{reg_id} недоступен.")
             return
 
-
-
         # Информация о регистраторе
         reg_info = main_funcs.get_reg_info(reg_id) or main_funcs.create_new_reg(reg_id)
         logger.debug(f"Информация о регистраторе {reg_id} - {reg_info}")
@@ -147,7 +145,7 @@ class Main:
         adjustment_sequence = (0, 15, 30, 45)
 
         for interest in interests:
-            logger.info(f"Работаем с интересом {interest}")
+            logger.info(f"Работаем с интересом {interest}. {interests.index(interest)}/{interests}")
             interest_cloud_folder = cloud_uploader.create_interest_folder_path(
                 interest_name=interest["name"],
                 dest_directory=settings.CLOUD_PATH
@@ -177,6 +175,8 @@ class Main:
                 data=enriched["report"],
                 remote_folder_path=enriched["cloud_folder"]
             )
+
+        logger.info(f"{reg_id}. Все интересы обработаны.")
 
         # Обновляем last_upload_time
         last_interest_time = self.get_last_interest_datetime(interests) if interests else end_time

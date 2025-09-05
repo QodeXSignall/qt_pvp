@@ -1,6 +1,7 @@
 from _thread import allocate_lock
 from qt_pvp.logger import logger
 from qt_pvp import settings
+from qt_pvp.filelocker import FileLock, _load_states, _atomic_save_states, LOCK_PATH
 from typing import List
 import subprocess
 import datetime
@@ -14,8 +15,20 @@ import time
 import os
 
 
-json_states_mutex = allocate_lock()
 
+def _default_new_reg_info():
+    last_upload = datetime.datetime.today() - datetime.timedelta(days=7)
+    return {
+        "interests": [],
+        "chanel_id": 0,
+        "last_upload_time": last_upload.strftime("%Y-%m-%d %H:%M:%S"),
+        "by_trigger": 1,
+        "by_stops": 0,
+        "by_door_limit_switch": 0,
+        "by_lifting_limit_switch": 1,
+        "continuous": 0,
+        "euro_container_alarm": 4,
+    }
 
 def unzip_archives_in_directory(input_dir, output_dir):
     # Проверка существования входящей директории
@@ -185,21 +198,10 @@ def get_analyze_by_alarm(date, device_id, skip_depot=False):
     return eumid_response.json()
 
 
-def get_json_states():
-    with open(settings.states) as fobj:
-        states = json.load(fobj)
-    return states
-
-
-def save_new_states_to_file(states):
-    with open(settings.states, "w") as fobj:
-        json.dump(states, fobj, indent=4)
-
-
-def get_regs_states(**kwargs):
-    with json_states_mutex:
-        states = get_json_states()["regs"]
-    return states
+def get_regs_states():
+    with FileLock(LOCK_PATH):
+        states = _load_states().get("regs", {})
+        return json.loads(json.dumps(states))  # копия
 
 
 def _ensure_alarms_fields(regs: dict, reg_id: str = None) -> bool:
@@ -214,66 +216,72 @@ def _ensure_alarms_fields(regs: dict, reg_id: str = None) -> bool:
     return changed
 
 
-def ensure_alarms_structure(reg_id: str = None):
-    with json_states_mutex:
-        states = get_json_states()
-        regs = states.get("regs", {})
-        if _ensure_alarms_fields(regs, reg_id):
-            states["regs"] = regs
-            save_new_states_to_file(states)
-
-def get_interests(reg_id):
-    reg_info = get_reg_info(reg_id)
-    if not reg_info:
-        return
-    return reg_info["interests"]
+def ensure_alarms_structure_inplace(regs: dict, reg_id: str | None = None) -> bool:
+    """
+    НИЧЕГО НЕ ПИШЕТ В ФАЙЛ. Только правит regs in-place.
+    Возвращает True, если структура была дополнена/исправлена.
+    """
+    changed = False
+    if reg_id is None:
+        for rid in list(regs.keys()):
+            if _ensure_alarms_fields(regs, rid):
+                changed = True
+        return changed
+    else:
+        return _ensure_alarms_fields(regs, reg_id)
 
 
 def save_new_interests(reg_id, interests):
-    with json_states_mutex:
-        states = get_json_states()
-        if not reg_id in states["regs"]:
-            create_new_reg(reg_id)
-        states["regs"][reg_id]["states"] = interests
-        save_new_states_to_file(states)
+    with FileLock(LOCK_PATH):
+        states = _load_states()
+        regs = states.setdefault("regs", {})
+        if reg_id not in regs:
+            regs[reg_id] = _default_new_reg_info()
+        ensure_alarms_structure_inplace(regs, reg_id)
+        regs[reg_id]["interests"] = interests  # <-- тут был баг: раньше писалось в "states"
+        _atomic_save_states(states)
 
 
 def clean_interests(reg_id):
-    with json_states_mutex:
+    with FileLock(LOCK_PATH):
         logger.debug("Cleaning interests in states.json")
-        states = get_json_states()
-        states["regs"][reg_id]["interests"] = []
-        save_new_states_to_file(states)
+        states = _load_states()
+        regs = states.setdefault("regs", {})
+        if reg_id not in regs:
+            regs[reg_id] = _default_new_reg_info()
+        ensure_alarms_structure_inplace(regs, reg_id)
+        regs[reg_id]["interests"] = []
+        _atomic_save_states(states)
 
 
-def get_reg_info(reg_id):
-    ensure_alarms_structure(reg_id)
-    regs = get_regs_states()
-    if reg_id not in regs.keys():
-        return
-    return regs[reg_id]
+
+def get_reg_info(reg_id: str):
+    with FileLock(LOCK_PATH):
+        states = _load_states()
+        regs = states.setdefault("regs", {})
+        created = False
+        if reg_id not in regs:
+            regs[reg_id] = _default_new_reg_info()
+            created = True
+        changed = ensure_alarms_structure_inplace(regs, reg_id) or created
+        if changed:
+            _atomic_save_states(states)
+        return json.loads(json.dumps(regs[reg_id]))
+
 
 
 def create_new_reg(reg_id):
-    with json_states_mutex:
-        info = get_json_states()
-        if reg_id in info["regs"].keys():
-            return
-        last_upload = datetime.datetime.today() - datetime.timedelta(days=7)
-        new_reg_info = {
-            "interests": [],
-            "chanel_id": 0,
-            "last_upload_time": last_upload.strftime("%Y-%m-%d %H:%M:%S"),
-            "by_trigger": 1,
-            "by_stops": 0,
-            "by_door_limit_switch": 0,
-            "by_lifting_limit_switch": 1,
-            "continuous": 0,
-            "euro_container_alarm": 4,
-        }
-        info["regs"][reg_id] = new_reg_info
-        save_new_states_to_file(info)
-    return new_reg_info
+    with FileLock(LOCK_PATH):
+        states = _load_states()
+        regs = states.setdefault("regs", {})
+        if reg_id in regs:
+            return json.loads(json.dumps(regs[reg_id]))
+        regs[reg_id] = _default_new_reg_info()
+        # ensure — только in-place
+        ensure_alarms_structure_inplace(regs, reg_id)
+        _atomic_save_states(states)
+        return json.loads(json.dumps(regs[reg_id]))
+
 
 
 def get_reg_last_upload_time(reg_id):
@@ -285,16 +293,17 @@ def get_reg_last_upload_time(reg_id):
     return reg_info["last_upload_time"]
 
 
-def save_new_reg_last_upload_time(reg_id, timestamp):
-    with json_states_mutex:
-        logger.info(
-            f"{reg_id}. Обновлен `last_upload_time`: {timestamp}")
-        states = get_json_states()
-        if not reg_id in states["regs"]:
-            create_new_reg(reg_id)
-        states["regs"][reg_id]["last_upload_time"] = timestamp
-        save_new_states_to_file(states)
-
+def save_new_reg_last_upload_time(reg_id: str, timestamp: str):
+    with FileLock(LOCK_PATH):
+        states = _load_states()
+        regs = states.setdefault("regs", {})
+        if reg_id not in regs:
+            regs[reg_id] = _default_new_reg_info()  # ← вместо create_new_reg(...)
+        # ensure только in-place
+        ensure_alarms_structure_inplace(regs, reg_id)
+        regs[reg_id]["last_upload_time"] = timestamp
+        _atomic_save_states(states)
+    logger.info(f"{reg_id}. Обновлен `last_upload_time`: {timestamp}")
 
 def video_remover_cycle():
     while True:
