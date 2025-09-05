@@ -105,7 +105,7 @@ class Main:
 
         ignore = reg_info.get("ignore", False)
         if ignore:
-            f"Игнорируем регистратор {reg_id}"
+            logger.debug(f"Игнорируем регистратор {reg_id}")
             return
         # Временные границы окна
         TIME_FMT = "%Y-%m-%d %H:%M:%S"
