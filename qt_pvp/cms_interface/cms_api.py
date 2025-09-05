@@ -1,3 +1,4 @@
+from typing import Iterable, List, Optional
 from qt_pvp.cms_interface import functions
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -261,38 +262,72 @@ async def download_interest_videos(jsession, interest, chanel_id, reg_id,
     return out
 
 
-
 async def get_frames(jsession, reg_id: str,
                      year: int, month: int, day: int,
-                     start_sec: int, end_sec: int):
+                     start_sec: int, end_sec: int) -> List[str]:
+    """
+    Для каждого канала пытаемся вытащить кадр.
+    Ретраи: фиксированный start_sec, растём только по end_sec -> end_sec + Δ.
+    """
     channels = [0, 1, 2, 3]
-    frames = []
+    frames: List[str] = []
+    # Только увеличиваем правую границу окна
+    FRAME_RETRY_DELTAS: Iterable[int] = (0, 4, 6, 8, 10, 20, 30, 40)
+    DAY_END = 24 * 60 * 60 - 1
     for channel_id in channels:
-        try:
-            videos_path = await download_video(jsession=jsession,
-                                               reg_id=reg_id,
-                                               channel_id=channel_id,
-                                               year=year,
-                                               month=month, day=day,
-                                               start_sec=start_sec,
-                                               end_sec=end_sec)
-            logger.debug(f"Channel id {channel_id} - {videos_path}")
-            if not videos_path:
+        frame_got: Optional[str] = None
+
+        for i, delta in enumerate(FRAME_RETRY_DELTAS, start=1):
+            cur_start = start_sec                         # НЕ меняем
+            cur_end   = min(DAY_END, end_sec + delta)     # УВЕЛИЧИВАЕМ только правую границу
+
+            logger.debug(
+                f"{reg_id}: ch={channel_id} retry {i}/{len(tuple(FRAME_RETRY_DELTAS))} "
+                f"Δ={delta} -> window=[{cur_start}..{cur_end}]"
+            )
+
+            # Скачиваем ровно это окно без внутренних авто-расширений
+            videos_paths = await download_video(
+                jsession=jsession,
+                reg_id=reg_id,
+                channel_id=channel_id,
+                year=year, month=month, day=day,
+                start_sec=cur_start,
+                end_sec=cur_end,
+                adjustment_sequence=(0,),  # только текущее окно
+            )
+
+            logger.debug(f"{reg_id}: ch={channel_id}, Δ={delta} -> files: {videos_paths}")
+
+            if not videos_paths:
+                await asyncio.sleep(0.2)
                 continue
-            video_path = videos_path[0]
 
-            # Попытка извлечь кадр
-            frame_path = extract_first_frame(video_path)
+            # Пробуем кадр из любого файла
+            for video_path in videos_paths:
+                try:
+                    frame_path = extract_first_frame(video_path)  # должен вернуть None при неудаче
+                except Exception as ex:
+                    logger.exception(f"{reg_id}: ch={channel_id} extract error: {ex}")
+                    frame_path = None
 
+                if frame_path:
+                    frame_got = frame_path
+                    logger.debug(f"{reg_id}: ch={channel_id}, Δ={delta} -> frame: {frame_path}")
+                    break
 
-            if not frame_path:
-                logger.error(f"Не удалось получить кадр с канала {channel_id}")
-                continue
+            if frame_got:
+                break  # по каналу успех — выходим из ретраев
 
-            frames.append(frame_path)
-        except Exception as e:
-            logger.exception(f"Ошибка при обработке канала {channel_id}: {e}")
+            await asyncio.sleep(0.2)  # чуть щадим CMS
+
+        if frame_got:
+            frames.append(frame_got)
+        else:
+            logger.error(f"{reg_id}: ch={channel_id} — кадр не получен после всех Δ")
+
     return frames
+
 
 
 def log_no_image_event(reg_id: str, frame_path: str, context: str = "unknown"):
@@ -325,8 +360,7 @@ def extract_first_frame(video_path: str,
         logger.error(f"Файл слишком маленький или не найден: {video_path}")
         log_no_image_event(reg_id="dummy", frame_path=video_path,
                            context="photo_before_after")
-        return _create_placeholder_image(
-            output_dir) if allow_placeholder else False
+        return
 
     cap = None
     for attempt in range(max_retries):
@@ -340,8 +374,7 @@ def extract_first_frame(video_path: str,
     if not cap or not cap.isOpened():
         logger.error(
             f"Не удалось открыть видео после {max_retries} попыток: {video_path}")
-        return _create_placeholder_image(
-            output_dir) if allow_placeholder else False
+        return
 
     os.makedirs(output_dir, exist_ok=True)
 
@@ -358,8 +391,7 @@ def extract_first_frame(video_path: str,
         return output_path
     else:
         logger.warning("Не удалось прочитать кадр из видео.")
-        return _create_placeholder_image(
-            output_dir) if allow_placeholder else False
+        return
 
 
 def _create_placeholder_image(output_dir: str):
