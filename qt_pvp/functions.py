@@ -19,6 +19,7 @@ import os
 def _default_new_reg_info():
     last_upload = datetime.datetime.today() - datetime.timedelta(days=7)
     return {
+        "ignore": False,
         "interests": [],
         "chanel_id": 0,
         "last_upload_time": last_upload.strftime("%Y-%m-%d %H:%M:%S"),
