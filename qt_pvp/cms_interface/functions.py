@@ -124,8 +124,6 @@ def find_interests_by_lifting_switches(tracks, sec_before=30, sec_after=30, star
     i = 0
     first_interest = True   # Используем в случаях, когда для первого интереса не найдена начальная остановка в заданных треках
     reg_cfg = get_reg_info(reg_id) if reg_id else None
-    euro_alarm_cfg = None
-    kgo_alarm_cfg = None
     try:
         euro_alarm_cfg = int((reg_cfg or {}).get("euro_container_alarm", 4))
     except Exception:
@@ -146,7 +144,7 @@ def find_interests_by_lifting_switches(tracks, sec_before=30, sec_after=30, star
 
         bits = list(bin(s1_int & 0xFFFFFFFF)[2:].zfill(32))
         bits.reverse()
-
+        print(timestamp, bits)
         i += 1
         min_speed_for_switch_detect = settings.config.getint("Interests", "MIN_SPEED_FOR_SWITCH_DETECT")
         euro_on = bits[euro_bit_idx] == '1'
@@ -188,6 +186,8 @@ def find_interests_by_lifting_switches(tracks, sec_before=30, sec_after=30, star
 
             # В этом цикле мы перебираем треки и ищем трек, когда погрузка закочена (по скорости и концевику)
             logger.debug("Теперь ищем когда машина поехала после погрузки.")
+
+            move_started_at = None
             while lifting_end_idx + 1 < len(tracks):
                 next_track = tracks[lifting_end_idx + 1]
                 next_s1 = next_track.get("s1")
@@ -202,20 +202,41 @@ def find_interests_by_lifting_switches(tracks, sec_before=30, sec_after=30, star
 
                 logger.debug(f"Ищем момент когда машина поехала после погрузки. {next_track.get('gt')}, EuroIO(bit {euro_bit_idx})={next_bits[euro_bit_idx]}" + (f", KGOIO(bit {kgo_bit_idx})={next_bits[kgo_bit_idx]}" if kgo_bit_idx is not None else "") + f", sp={next_spd}")
 
-                # Проверяем скорость и концевики, если машина поехала, то выходим из цикла
+                min_move_speed = settings.config.getint("Interests", "MIN_MOVE_SPEED")
+                min_move_duration = settings.config.getint("Interests", "MIN_MOVE_DURATION_SEC")
+                sw_time = next_track.get("gt")
+                ts = _to_ts(sw_time)
+
+                # 1) если сработал концевик — фиксируем и продолжаем расширять окно
                 if next_bits[euro_bit_idx] == '1' or (kgo_bit_idx is not None and next_bits[kgo_bit_idx] == '1'):
                     lifting_end_idx += 1
-                    sw_time = next_track.get("gt")
                     if next_bits[euro_bit_idx] == '1':
                         switch_events.append({"datetime": sw_time, "switch": euro_bit_idx})
                     if kgo_bit_idx is not None and next_bits[kgo_bit_idx] == '1':
                         switch_events.append({"datetime": sw_time, "switch": kgo_bit_idx})
                     last_switch_index = lifting_end_idx
-                elif next_spd <= 5:
-                    lifting_end_idx += 1
-                else:
-                    break
 
+                    # концевики нас не выводят из цикла, просто идём дальше
+                    # но при этом сбрасывать/ставить движение не нужно
+                    # (оставляем move_started_at как есть)
+
+                # 2) если скорость низкая — расширяем окно, но сбрасываем накопление «движения»
+                elif next_spd < min_move_speed:
+                    lifting_end_idx += 1
+                    move_started_at = None  # потеряли устойчивость — начинаем отсчёт заново
+
+                # 3) скорость выше порога — проверяем длительность устойчивого движения
+                else:
+                    # начинаем отсчёт, если ещё не начат
+                    if move_started_at is None:
+                        move_started_at = ts
+
+                    # расширяем окно на этой точке в любом случае
+                    lifting_end_idx += 1
+
+                    # если длительность непрерывного движения достигла порога — выходим
+                    if (ts - move_started_at) >= min_move_duration:
+                        break
             time_after, last_stop_idx = find_stop_after_lifting(tracks, last_switch_index + 1, settings, logger)
 
             if not time_after:
@@ -266,6 +287,19 @@ def find_interests_by_lifting_switches(tracks, sec_before=30, sec_after=30, star
             i += 1
 
     return {"interests": loading_intervals}
+
+
+def _to_ts(gt):
+    """Универсально переводим поле времени в timestamp (сек)."""
+    if isinstance(gt, (int, float)):
+        return float(gt)
+    # пробуем ISO8601
+    from datetime import datetime
+    try:
+        return datetime.fromisoformat(gt).timestamp()
+    except Exception:
+        # запасной формат "YYYY-mm-dd HH:MM:SS"
+        return datetime.strptime(gt, "%Y-%m-%d %H:%M:%S").timestamp()
 
 
 def find_stop_after_lifting(tracks, start_idx, settings, logger=None):
