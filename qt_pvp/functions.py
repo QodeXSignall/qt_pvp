@@ -16,7 +16,7 @@ import os
 
 
 
-def _default_new_reg_info():
+def _default_new_reg_info(plate=None):
     last_upload = datetime.datetime.today() - datetime.timedelta(days=7)
     return {
         "ignore": False,
@@ -29,7 +29,8 @@ def _default_new_reg_info():
         "by_lifting_limit_switch": 1,
         "continuous": 0,
         "euro_container_alarm": 4,
-        "kgo_container_alarm": 3
+        "kgo_container_alarm": 3,
+        "plate": plate,
     }
 
 def unzip_archives_in_directory(input_dir, output_dir):
@@ -80,40 +81,59 @@ def split_time_range_to_dicts(start_time, end_time, interval):
     return result
 
 
+# qt_pvp/functions.py
 def concatenate_videos(converted_files, output_abs_name):
-    # Уникальное имя временного файла
+    import shutil, os, subprocess, uuid
+    from qt_pvp.logger import logger
+
+    concat_candidates = []
+    for f in converted_files:
+        if not f:
+            continue
+        try:
+            if os.path.isfile(f) and os.path.getsize(f) > 0:
+                concat_candidates.append(f)
+            else:
+                logger.error(f"[CONCAT] Файл отсутствует или пустой: {f}")
+        except OSError as e:
+            logger.error(f"[CONCAT] Ошибка доступа к файлу {f}: {e}")
+
+    if len(concat_candidates) == 0:
+        raise FileNotFoundError("[CONCAT] Нет ни одного валидного входного файла — пропускаю интерес.")
+
+    if len(concat_candidates) == 1:
+        # вместо ffmpeg — просто копия единственного файла как итог
+        src = concat_candidates[0]
+        os.makedirs(os.path.dirname(output_abs_name), exist_ok=True)
+        shutil.copyfile(src, output_abs_name)
+        logger.debug(f"[CONCAT] Единственный файл — скопирован: {src} -> {output_abs_name}")
+        return
+
+    # стандартная concat через ffmpeg
     concat_list_path = os.path.join(
         os.path.dirname(output_abs_name),
         f"concat_list_{uuid.uuid4().hex}.txt"
     )
-
-    logger.debug(f"Конкатенация файлов {converted_files}")
-
+    logger.debug(f"[CONCAT] Конкатенация файлов {concat_candidates}")
     try:
-        # Пишем список файлов в temp-файл
         with open(concat_list_path, "w", encoding="utf-8") as f:
-            for file in converted_files:
+            for file in concat_candidates:
                 f.write(f"file '{file}'\n")
-
-        # Команда ffmpeg
-        concatenate_command = [
-            "ffmpeg", "-y",
-            "-f", "concat", "-safe", "0",
-            "-i", concat_list_path,
-            "-c", "copy", output_abs_name
-        ]
-
-        logger.debug(f"Команда на конкатенацию: {' '.join(concatenate_command)}")
-
-        subprocess.run(concatenate_command, check=True)
-
-        logger.debug(f"Успешно объединено. Результат: {output_abs_name}.")
+        cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+               "-i", concat_list_path, "-c", "copy", output_abs_name]
+        logger.debug(f"[CONCAT] Команда: {' '.join(cmd)}")
+        # захватываем stderr для нормального логирования
+        proc = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        logger.debug(f"[CONCAT] Успех. Результат: {output_abs_name}")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"[CONCAT] ffmpeg упал: {e.stderr or e.stdout}")
+        raise
     finally:
-        # Удаляем временный файл
         try:
             os.remove(concat_list_path)
         except OSError:
             pass
+
 
 
 def convert_video_file(input_video_path: str, output_dir: str = None,
@@ -256,6 +276,39 @@ def save_new_interests(reg_id, interests):
         regs[reg_id]["interests"] = interests  # <-- тут был баг: раньше писалось в "states"
         _atomic_save_states(states)
 
+def _get_processed_set(reg_id: str) -> set[str]:
+    with FileLock(LOCK_PATH):
+        states = _load_states()
+        reg = states.setdefault("regs", {}).setdefault(reg_id, _default_new_reg_info())
+        ensure_alarms_structure_inplace(states["regs"], reg_id)
+        processed = reg.get("processed_interests", [])
+        return set(processed)
+
+def _save_processed(reg_id: str, name: str, keep_last: int = 1000):
+    with FileLock(LOCK_PATH):
+        states = _load_states()
+        regs = states.setdefault("regs", {})
+        reg = regs.setdefault(reg_id, _default_new_reg_info())
+        ensure_alarms_structure_inplace(regs, reg_id)
+        arr = reg.get("processed_interests", [])
+        if name not in arr:
+            arr.append(name)
+            # ограничим размер кольцевым буфером
+            if len(arr) > keep_last:
+                arr = arr[-keep_last:]
+            reg["processed_interests"] = arr
+        _atomic_save_states(states)
+
+def filter_already_processed(reg_id: str, interests: list[dict]) -> list[dict]:
+    done = _get_processed_set(reg_id)
+    out = []
+    for it in interests:
+        nm = it.get("name")
+        if nm in done:
+            logger.info(f"[DEDUP] Пропуск уже обработанного интереса: {nm}")
+            continue
+        out.append(it)
+    return out
 
 def clean_interests(reg_id):
     with FileLock(LOCK_PATH):
@@ -285,13 +338,13 @@ def get_reg_info(reg_id: str):
 
 
 
-def create_new_reg(reg_id):
+def create_new_reg(reg_id, plate):
     with FileLock(LOCK_PATH):
         states = _load_states()
         regs = states.setdefault("regs", {})
         if reg_id in regs:
             return json.loads(json.dumps(regs[reg_id]))
-        regs[reg_id] = _default_new_reg_info()
+        regs[reg_id] = _default_new_reg_info(plate=plate)
         # ensure — только in-place
         ensure_alarms_structure_inplace(regs, reg_id)
         _atomic_save_states(states)

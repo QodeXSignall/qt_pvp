@@ -35,3 +35,5 @@ cms_host = f"{config.get('CMS', 'schema')}{config.get('CMS', 'ip')}:" \
 
 cms_login = os.environ.get("cms_login")
 cms_password = os.environ.get("cms_password")
+TIME_FMT = "%Y-%m-%d %H:%M:%S"
+

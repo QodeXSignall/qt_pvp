@@ -46,7 +46,6 @@ def get_vehicle_parks(
     data = r.json()
     if data.get("result") != 0:
         raise RuntimeError(f"API error result={data.get('result')}: {data}")
-    print("DATA", data)
     return data
 
 

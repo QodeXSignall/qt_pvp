@@ -33,12 +33,12 @@ class Main:
             logger.debug(f"Got devices online: {devices_online}")
         return devices_online
 
-    async def operate_device(self, reg_id):
+    async def operate_device(self, reg_id, plate):
         if reg_id in self.devices_in_progress:
             return
         self.devices_in_progress.append(reg_id)
         try:
-            await self.download_reg_videos(reg_id, by_trigger=True)
+            await self.download_reg_videos(reg_id, plate, by_trigger=True)
         except:
             logger.error(traceback.format_exc())
         else:
@@ -57,14 +57,24 @@ class Main:
                 start_time=start_time,
                 stop_time=stop_time,
             )
+            alarm_reports = cms_api_funcs.get_device_alarms(
+                jsession=self.jsession,
+                dev_idno=reg_id,
+                begintime=start_time,
+                endtime=stop_time)
+            prepared = cms_api_funcs.prepare_alarms(
+                raw_alarms=alarm_reports.get("alarms", []),
+                reg_cfg=reg_info,
+                allowed_atp=frozenset({19, 20, 21, 22}),
+                min_stop_speed_kmh=settings.config.getint("Interests", "MIN_STOP_SPEED") / 10.0,
+                merge_gap_sec=15
+            )
 
-            interests = cms_api_funcs.analyze_tracks_get_interests(
+            interests = cms_api_funcs.find_interests_by_lifting_switches(
                 tracks=tracks,
-                by_stops=reg_info["by_stops"],
-                continuous=reg_info["continuous"],
-                by_lifting_limit_switch=reg_info["by_lifting_limit_switch"],
                 start_tracks_search_time=start_time_dt,
-                reg_id=reg_id
+                reg_id=reg_id,
+                alarms=prepared
             )
 
             if "interests" in interests:
@@ -84,7 +94,7 @@ class Main:
                 logger.warning(f"[ANALYZE] Неожиданный формат: {type(interests)}")
                 return []
 
-    async def download_reg_videos(self, reg_id, chanel_id: int = None,
+    async def download_reg_videos(self, reg_id, plate, chanel_id: int = None,
                                   start_time=None, end_time=None,
                                   by_trigger=False, proc=False,
                                   split: int = None):
@@ -97,10 +107,10 @@ class Main:
             return
 
         # Информация о регистраторе
-        reg_info = main_funcs.get_reg_info(reg_id) or main_funcs.create_new_reg(reg_id)
+        reg_info = main_funcs.get_reg_info(reg_id) or main_funcs.create_new_reg(reg_id, plate)
         logger.debug(f"Информация о регистраторе {reg_id} - {reg_info}")
-        if not reg_info:
-            main_funcs.create_new_reg(reg_id)
+        #if not reg_info:
+        #    main_funcs.create_new_reg(reg_id)
         chanel_id = reg_info.get("chanel_id", 0)  # Если нет ID канала, ставим 0
 
         ignore = reg_info.get("ignore", False)
@@ -146,6 +156,11 @@ class Main:
 
         for interest in interests:
             logger.info(f"Работаем с интересом {interest}. {interests.index(interest)}/{interests}")
+            if cloud_uploader.interest_folder_exists(interest["name"], settings.CLOUD_PATH):
+                logger.info(f"[DEDUP] В облаке уже есть папка интереса {interest['name']} — пропускаем.")
+                main_funcs._save_processed(reg_id, interest["name"])
+                continue
+
             interest_cloud_folder = cloud_uploader.create_interest_folder_path(
                 interest_name=interest["name"],
                 dest_directory=settings.CLOUD_PATH
@@ -251,6 +266,9 @@ class Main:
         # Дожидаемся завершения обеих задач
         result = await video_task
 
+        if "error" in result:
+            logger.error(result["error"])
+            return
         if not result["output_video_path"]:
             logger.warning(
                 f"{reg_id}: Нечего выгружать на облако.")
@@ -313,9 +331,12 @@ class Main:
 
         final_videos_paths_list = (converted_videos if converted_videos else file_paths)
         if len(final_videos_paths_list) > 1:
-            await asyncio.to_thread(main_funcs.concatenate_videos,
+            try:
+                await asyncio.to_thread(main_funcs.concatenate_videos,
                                     final_videos_paths_list,
                                     final_interest_video_name)
+            except Exception as e:
+                return {"error": str(e)}
             if converted_videos and settings.config.getboolean("General", "del_source_video_after_upload"):
                 logger.debug("Конвертированные файлы исходники перед конкатенацией добавляем в список удаления")
                 for file in final_videos_paths_list:
@@ -350,7 +371,8 @@ class Main:
             devices_online = self.get_devices_online()
             for device_dict in devices_online:
                 reg_id = device_dict["did"]
-                await self.operate_device(reg_id)
+                plate = device_dict["vid"]
+                await self.operate_device(reg_id, plate)
             await asyncio.sleep(5)
 
     def check_if_reg_online(self, reg_id):

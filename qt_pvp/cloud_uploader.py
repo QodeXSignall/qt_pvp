@@ -33,6 +33,15 @@ def parse_filename(filename):
     date_str = main_parts[1]
     return reg_id, date_str
 
+# qt_pvp/cloud_uploader.py
+def interest_folder_exists(interest_name: str, dest_directory: str) -> bool:
+    registr_folder, date_folder_path, interest_folder_path = get_interest_folder_path(interest_name, dest_directory)
+    try:
+        return client.check(interest_folder_path)
+    except Exception as e:
+        logger.warning(f"Не удалось проверить наличие папки {interest_folder_path}: {e}")
+        return False
+
 
 def create_folder_if_not_exists(client, folder_path):
     """
