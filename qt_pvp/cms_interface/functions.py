@@ -564,7 +564,8 @@ def find_interests_by_lifting_switches(
         GAP_THRESHOLD = settings.config.getint("Interests", "GAP_THRESHOLD_SEC", fallback=10)
 
         if gap_sec > GAP_THRESHOLD:
-            print(t_curr, t_next, gap_sec)
+            logger.debug(f"gap: {t_curr} → {t_next} = {gap_sec:.1f}s")
+            logger.debug(f"{timestamp} sp={track.get('sp')}")
         # === Новая вставка: обработка "разрыва" через алармы (если они переданы и подготовлены) ===
         if alarms and isinstance(alarms, dict) and "alarms" in alarms and "starts" in alarms and gap_sec > GAP_THRESHOLD:
             gap_start_ts = t_curr.timestamp()
@@ -749,14 +750,15 @@ def find_interests_by_lifting_switches(
                         break
 
             time_after, last_stop_idx = find_stop_after_lifting(tracks, last_switch_index + 1, settings, logger)
-
+            used_fallback = False
             if not time_after:
                 time_after = fallback_photo_after_time(tracks, last_switch_index, settings, logger)
                 if not time_after:
                     i = lifting_end_idx + 1
                     continue
+                used_fallback = True
 
-            if last_stop_idx is None:
+            if (last_stop_idx is None) and (not used_fallback):
                 logger.warning(f"[AFTER] Нет last_stop_idx — остановка не найдена после {timestamp}")
                 i = lifting_end_idx + 1
                 continue
@@ -926,18 +928,21 @@ def find_interests_by_lifting_switches_depr(
                     # если длительность непрерывного движения достигла порога — выходим
                     if (ts - move_started_at) >= min_move_duration:
                         break
-            time_after, last_stop_idx = find_stop_after_lifting(tracks, last_switch_index + 1, settings, logger)
 
+            time_after, last_stop_idx = find_stop_after_lifting(tracks, last_switch_index + 1, settings, logger)
+            used_fallback = False
             if not time_after:
                 time_after = fallback_photo_after_time(tracks, last_switch_index, settings, logger)
                 if not time_after:
                     i = lifting_end_idx + 1
                     continue
+                used_fallback = True
 
-            if last_stop_idx is None:
+            if (last_stop_idx is None) and (not used_fallback):
                 logger.warning(f"[AFTER] Нет last_stop_idx — остановка не найдена после {timestamp}")
                 i = lifting_end_idx + 1
                 continue
+
 
             # Применяем сдвиг - фото ПОСЛЕ за несколько секунд до движения
             raw_time_after = datetime.datetime.strptime(time_after, "%Y-%m-%d %H:%M:%S")

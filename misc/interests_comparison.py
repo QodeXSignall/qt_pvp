@@ -84,6 +84,7 @@ def diff_sets(expected: Set[str], detected: Set[str], eps_sec: int = 0) -> Tuple
     return new, missing
 
 def main(day_str = DAY_STR):
+    print(f"\nWorking with day {day_str}")
     client = Client(WEBDAV_OPTIONS)
 
     # 1) Эталон из WebDAV
@@ -116,13 +117,18 @@ def main(day_str = DAY_STR):
 
     # 4) Сравнение: сначала строгая, затем фаззи (±10с)
     new_strict, missing_strict = diff_sets(expected_names, detected_names, eps_sec=0)
-    new_fuzzy,  missing_fuzzy  = diff_sets(expected_names, detected_names, eps_sec=10)
+    new_fuzzy,  missing_fuzzy  = diff_sets(expected_names, detected_names, eps_sec=30)
 
-    print("=== STRICT ===")
+    #print("=== STRICT ===")
+    #print("Новые интересы (не были в WebDAV):")
+    #for n in sorted(new_strict): print("  +", n)
+    #print("Не найденные новым алгоритмом интересы (В webdav они есть)")
+    #for n in sorted(missing_strict): print("  -", n)
+    print("=== Fazzy ===")
     print("Новые интересы (не были в WebDAV):")
-    for n in sorted(new_strict): print("  +", n)
+    for n in sorted(new_fuzzy): print("  +", n)
     print("Не найденные новым алгоритмом интересы (В webdav они есть)")
-    for n in sorted(missing_strict): print("  -", n)
+    for n in sorted(missing_fuzzy): print("  -", n)
 
 
 if __name__ == "__main__":
