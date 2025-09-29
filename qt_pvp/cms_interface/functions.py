@@ -673,6 +673,7 @@ def find_interests_by_lifting_switches(
             logger.info(f"[SWITCH] Срабатывание концевика в {timestamp}, EuroIO(bit {euro_bit_idx})={bits[euro_bit_idx]}" + (f", KGOIO(bit {kgo_bit_idx})={bits[kgo_bit_idx]}" if kgo_bit_idx is not None else ""))
             if track.get("sp") > min_speed_for_switch_detect:
                 logger.debug(f"[SWITCH] Игнор: скорость {track.get('sp')} > {min_speed_for_switch_detect}")
+                i += 1
                 continue
 
             if kgo_on:
