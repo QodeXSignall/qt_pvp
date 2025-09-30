@@ -609,19 +609,14 @@ def find_interests_by_lifting_switches(
                         continue
 
                 # ---- BEFORE: ищем остановку до события (как обычно), иначе fallback ----
-                time_before = find_first_stable_stop(tracks, i, current_dt, settings, first_interest,
+                time_before = find_first_stable_stop(tracks, i, alarm_dt, settings, first_interest,
                                                      start_tracks_search_time)
                 if not time_before:
-                    logger.warning(f"[BEFORE] Не найдена остановка до сработки концевика в {timestamp}")
-                    # локальный before для ЭТОГО интереса:
-                    #  - 120 c, если КГО
-                    #  - иначе базовое значение sec_before, переданное в функцию
+                    logger.warning(f"[BEFORE] Не найдена остановка до alarm {alarm_ts_str}")
+                    # fallback ДО: 120 c для КГО, иначе базовый sec_before
                     fb_before = 30
-                    time_before = (current_dt - datetime.timedelta(seconds=fb_before)).strftime("%Y-%m-%d %H:%M:%S")
-                    logger.warning(f"[BEFORE-FALLBACK] Первый интерес: {fb_before}с до {timestamp} => {time_before}")
-                    logger.warning(f"[FALLBACK BEFORE] используем fallback для alarm {alarm_ts_str}")
-                    fb_before = settings.config.getint("Interests", "BEFORE_FALLBACK_SEC", fallback=30)
                     time_before = (alarm_dt - datetime.timedelta(seconds=fb_before)).strftime("%Y-%m-%d %H:%M:%S")
+                    logger.warning(f"[BEFORE-FALLBACK] alarm-gap: {fb_before}с до {alarm_ts_str} => {time_before}")
 
                 # ---- AFTER: стандартный поиск, иначе fallback от конца аларма ----
                 time_after, last_stop_idx = find_stop_after_lifting(tracks, i + 1, settings, logger)
