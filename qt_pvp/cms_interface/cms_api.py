@@ -220,6 +220,9 @@ async def wait_and_get_dwn_url(jsession, download_task_url):
             logger.debug(
                 f'Get path: {str(response_json["oldTaskAll"]["dph"])}')
             return response_json["oldTaskAll"]["dph"]
+        elif result == 32:
+            logger.warning(f"Device is offline! {result}")
+            return {"error": "Device is offline!"}
         else:
             time.sleep(1)
 
