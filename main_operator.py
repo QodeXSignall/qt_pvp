@@ -159,6 +159,7 @@ class Main:
             if cloud_uploader.interest_folder_exists(interest["name"], settings.CLOUD_PATH):
                 logger.info(f"[DEDUP] В облаке уже есть папка интереса {interest['name']} — пропускаем.")
                 main_funcs._save_processed(reg_id, interest["name"])
+                main_funcs.save_new_reg_last_upload_time(reg_id, interest["end_time"])
                 continue
 
             interest_cloud_folder = cloud_uploader.create_interest_folder_path(
@@ -177,6 +178,7 @@ class Main:
 
             if not enriched:
                 logger.warning(f"{reg_id}: Не удалось получить видеофайлы для интереса")
+                main_funcs.save_new_reg_last_upload_time(reg_id, interest["end_time"])
                 continue
 
             enriched["cloud_folder"] = interest_cloud_folder

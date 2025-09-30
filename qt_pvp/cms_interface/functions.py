@@ -565,7 +565,7 @@ def find_interests_by_lifting_switches(
 
         if gap_sec > GAP_THRESHOLD:
             logger.debug(f"gap: {t_curr} → {t_next} = {gap_sec:.1f}s")
-            logger.debug(f"{timestamp} sp={track.get('sp')}")
+            logger.debug(f"[TRACE] gt={track.get('gt')} sp={track.get('sp')}")
         # === Новая вставка: обработка "разрыва" через алармы (если они переданы и подготовлены) ===
         if alarms and isinstance(alarms, dict) and "alarms" in alarms and "starts" in alarms and gap_sec > GAP_THRESHOLD:
             gap_start_ts = t_curr.timestamp()
@@ -609,11 +609,16 @@ def find_interests_by_lifting_switches(
                         continue
 
                 # ---- BEFORE: ищем остановку до события (как обычно), иначе fallback ----
-                time_before = find_first_stable_stop(tracks, i, alarm_dt, settings, first_interest, start_tracks_search_time)
+                time_before = find_first_stable_stop(tracks, i, current_dt, settings, first_interest,
+                                                     start_tracks_search_time)
                 if not time_before:
-                    if first_interest:
-                        logger.warning("[BEFORE] Первый интерес (alarm-gap), нет остановки до — возвращаемся за доп. треками")
-                        return {"error": "No stop before alarm for first interest"}
+                    logger.warning(f"[BEFORE] Не найдена остановка до сработки концевика в {timestamp}")
+                    # локальный before для ЭТОГО интереса:
+                    #  - 120 c, если КГО
+                    #  - иначе базовое значение sec_before, переданное в функцию
+                    fb_before = 30
+                    time_before = (current_dt - datetime.timedelta(seconds=fb_before)).strftime("%Y-%m-%d %H:%M:%S")
+                    logger.warning(f"[BEFORE-FALLBACK] Первый интерес: {fb_before}с до {timestamp} => {time_before}")
                     logger.warning(f"[FALLBACK BEFORE] используем fallback для alarm {alarm_ts_str}")
                     fb_before = settings.config.getint("Interests", "BEFORE_FALLBACK_SEC", fallback=30)
                     time_before = (alarm_dt - datetime.timedelta(seconds=fb_before)).strftime("%Y-%m-%d %H:%M:%S")
@@ -676,9 +681,6 @@ def find_interests_by_lifting_switches(
                 logger.debug(f"[SWITCH] Игнор: скорость {track.get('sp')} > {min_speed_for_switch_detect}")
                 i += 1
                 continue
-
-            if kgo_on:
-                sec_before = 120
 
             logger.debug(f"[SWITCH] Принято: {cargo_type} в {timestamp}")
             switch_events = []
