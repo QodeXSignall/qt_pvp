@@ -145,7 +145,7 @@ class Main:
         if not interests:
             logger.info(f"{reg_id}: Интересы не найдены в интервале {start_time} - {end_time}")
             main_funcs.save_new_reg_last_upload_time(reg_id, end_time)
-            return
+            return True
 
         logger.info(f"{reg_id}: Найдено {len(interests)} интересов")
         interests = main_funcs.merge_overlapping_interests(interests)
@@ -155,6 +155,7 @@ class Main:
         adjustment_sequence = (0, 15, 30, 45)
 
         for interest in interests:
+            created_start_time = datetime.datetime.now()
             logger.info(f"Работаем с интересом {interest}. {interests.index(interest)}/{interests}")
             if cloud_uploader.interest_folder_exists(interest["name"], settings.CLOUD_PATH):
                 logger.info(f"[DEDUP] В облаке уже есть папка интереса {interest['name']} — пропускаем.")
@@ -162,11 +163,11 @@ class Main:
                 main_funcs.save_new_reg_last_upload_time(reg_id, interest["end_time"])
                 continue
 
-            interest_cloud_folder = cloud_uploader.create_interest_folder_path(
+            cloud_paths = cloud_uploader.create_interest_folder_path(
                 interest_name=interest["name"],
                 dest_directory=settings.CLOUD_PATH
             )
-
+            interest_cloud_folder = cloud_paths["interest_folder_path"]
             logger.debug(f"{reg_id}: Начинаем скачивание видео для интереса {interest['name']}")
             enriched = await cms_api.download_interest_videos(
                 self.jsession,
@@ -197,6 +198,10 @@ class Main:
                 remote_folder_path=enriched["cloud_folder"]
             )
 
+            cloud_uploader.append_report_line_to_cloud(remote_folder_path=cloud_paths["date_forder_path"],
+                                                       created_start_time=created_start_time.strftime(TIME_FMT),
+                                                       created_end_time=datetime.datetime.now().strftime(TIME_FMT),
+                                                       file_name=interest["name"])
             main_funcs.save_new_reg_last_upload_time(reg_id, interest["end_time"])
 
         logger.info(f"{reg_id}. Все интересы обработаны.")
@@ -375,7 +380,7 @@ class Main:
                 reg_id = device_dict["did"]
                 plate = device_dict["vid"]
                 await self.operate_device(reg_id, plate)
-            await asyncio.sleep(5)
+            await asyncio.sleep(3)
 
     def check_if_reg_online(self, reg_id):
         devices_online = self.get_devices_online()

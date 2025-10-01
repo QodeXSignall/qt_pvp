@@ -18,6 +18,77 @@ options = {
 
 client = Client(options)
 
+def append_report_line_to_cloud(
+    remote_folder_path: str,
+    created_start_time: str,
+    created_end_time: str,
+    file_name: str,
+    report_filename: str = "reports.txt",
+) -> bool:
+    """
+    Создаёт (если нет) или обновляет reports.txt в заданной папке WebDAV, добавляя строку:
+    "{created_start_time} {created_end_time} {file_name}"
+
+    :param remote_folder_path: Папка в облаке (WebDAV), где лежит reports.txt
+    :param created_start_time: Начало (строка, например "2025-09-03 12:34:56")
+    :param created_end_time:   Конец  (строка)
+    :param file_name:          Имя файла интереса/видео/папки (строка без перевода строки)
+    :param report_filename:    Имя файла отчёта (по умолчанию "reports.txt")
+    :return: True — если обновление прошло успешно, иначе False.
+    """
+    try:
+        # Гарантируем существование целевой папки
+        if not create_folder_if_not_exists(client, remote_folder_path):
+            logger.error(f"[REPORTS] Папка {remote_folder_path} недоступна для записи")
+            return False
+
+        # Подготовка путей
+        remote_file_path = posixpath.join(remote_folder_path, report_filename)
+        os.makedirs(settings.REPORTS_TEMP_FOLDER, exist_ok=True)
+        tmp_local = os.path.join(settings.REPORTS_TEMP_FOLDER, f"{uuid.uuid4().hex}.txt")
+
+        # Строка для добавления
+        line = f"{created_start_time} {created_end_time} {file_name}\n"
+
+        # Если reports.txt уже есть — скачиваем, аппендим и загружаем обратно
+        if client.check(remote_file_path):
+            # Скачали текущий файл
+            client.download_sync(remote_path=remote_file_path, local_path=tmp_local)
+
+            # Добавляем перевод строки, если его не было в конце, и дописываем нашу строку
+            with open(tmp_local, "rb") as frb:
+                content = frb.read()
+            needs_nl = len(content) > 0 and not content.endswith(b"\n")
+            with open(tmp_local, "ab") as fab:
+                if needs_nl:
+                    fab.write(b"\n")
+                fab.write(line.encode("utf-8"))
+        else:
+            # Файла нет — создаём локально с единственной строкой
+            with open(tmp_local, "w", encoding="utf-8") as fw:
+                fw.write(line)
+
+        # Загружаем обратно с повторами (используем уже готовую обёртку)
+        ok = upload_file_to_cloud(client, tmp_local, remote_file_path)
+
+        # Чистим временный файл
+        try:
+            delete_local_file(tmp_local)
+        except Exception:
+            pass
+
+        return ok
+
+    except Exception as e:
+        logger.error(f"[REPORTS] Не удалось обновить {remote_folder_path}/{report_filename}: {e}\n{traceback.format_exc()}")
+        # Попробуем подчистить временный файл, если остался
+        try:
+            if 'tmp_local' in locals() and os.path.exists(tmp_local):
+                delete_local_file(tmp_local)
+        except Exception:
+            pass
+        return False
+
 
 def parse_filename(filename):
     """
@@ -132,7 +203,9 @@ def create_interest_folder_path(interest_name, dest_directory):
             f"interest_folder_path: {created_interest}")
         return None  # Явно
 
-    return interest_folder_path
+    return {"register_folder_path": registr_folder,
+            "date_forder_path": date_folder_path,
+            "interest_folder_path": interest_folder_path}
 
 def upload_file(file_path, interest_folder_path):
     """
