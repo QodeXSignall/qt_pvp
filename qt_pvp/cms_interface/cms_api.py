@@ -227,8 +227,8 @@ async def wait_and_get_dwn_url(jsession, download_task_url):
         else:
             count += 1
             time.sleep(1)
-            if count % 10 == 0:
-                logger.info(f"Still downloading. Result {result}. Waiting {count} seconds...")
+            if count % 60 == 0:
+                logger.info(f"Still downloading. Response {response_json}. Waiting {count} seconds...")
 
 
 
