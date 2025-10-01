@@ -197,12 +197,12 @@ class Main:
                 data=enriched["report"],
                 remote_folder_path=enriched["cloud_folder"]
             )
+            main_funcs.save_new_reg_last_upload_time(reg_id, interest["end_time"])
 
             cloud_uploader.append_report_line_to_cloud(remote_folder_path=cloud_paths["date_forder_path"],
                                                        created_start_time=created_start_time.strftime(TIME_FMT),
                                                        created_end_time=datetime.datetime.now().strftime(TIME_FMT),
                                                        file_name=interest["name"])
-            main_funcs.save_new_reg_last_upload_time(reg_id, interest["end_time"])
 
         logger.info(f"{reg_id}. Все интересы обработаны.")
 
