@@ -1,5 +1,6 @@
 import time
 import traceback
+from urllib.parse import quote
 
 from webdav3.client import Client
 from qt_pvp.logger import logger
@@ -18,10 +19,57 @@ options = {
 
 client = Client(options)
 
+def _resolve_webdav_base_and_root(client):
+    """
+    Возвращает (base, root) для WebDAV-клиента.
+    base: 'https://dav.example.com'
+    root: 'some/root' (без ведущего '/'), либо '' если нет.
+    """
+    base = ''
+    root = ''
+
+    # Вариант 1: у некоторых версий есть client.options
+    if hasattr(client, "options"):
+        try:
+            base = (client.options.get("webdav_hostname") or "").rstrip("/")
+            root = (client.options.get("webdav_root") or "").strip("/")
+        except Exception:
+            pass
+
+    # Вариант 2: объект настроек client.webdav с полями hostname/root
+    if not base and hasattr(client, "webdav"):
+        try:
+            base = (getattr(client.webdav, "hostname", "") or getattr(client.webdav, "webdav_hostname", "")).rstrip("/")
+            root = (getattr(client.webdav, "root", "") or getattr(client.webdav, "webdav_root", "")).strip("/")
+        except Exception:
+            pass
+
+    # Вариант 3: прямые поля (мало ли)
+    if not base:
+        base = (getattr(client, "hostname", "") or getattr(client, "webdav_hostname", "")).rstrip("/")
+
+    if not base:
+        raise RuntimeError("Cannot resolve WebDAV base URL from client (no options/webdav/hostname).")
+
+    return base, root
+
+
+def _build_full_url(client, remote_path: str) -> str:
+    """
+    Собирает полный URL до remote_path с учётом base+root и percent-encoding.
+    """
+    base, root = _resolve_webdav_base_and_root(client)
+    # Сшиваем POSIX-пути без двойных слешей
+    joined_path = "/".join(p for p in [root, remote_path.lstrip("/")] if p)
+    # Кодируем каждый сегмент пути (оставляем /,:,% нетронутыми)
+    quoted_path = "/".join(quote(seg, safe="") for seg in joined_path.split("/"))
+    return f"{base}/{quoted_path}"
+
+
 def _download_file_safe(client, remote_path: str, local_path: str) -> bool:
     """
-    Пытается скачать через webdav3, а при KeyError('content-length') —
-    делает raw GET через client.session без требования Content-Length.
+    Сначала пробует стандартный download_sync.
+    При KeyError('content-length') — качает потоково через client.session по собранному URL.
     """
     try:
         client.download_sync(remote_path=remote_path, local_path=local_path)
@@ -31,28 +79,18 @@ def _download_file_safe(client, remote_path: str, local_path: str) -> bool:
             raise
         logger.warning(f"[REPORTS] Нет Content-Length у {remote_path}; fallback на raw GET")
 
-        # Собираем полный URL
-        from urllib.parse import quote
-
-        base = (client.options.get("webdav_hostname") or "").rstrip("/")
-        root = (client.options.get("webdav_root") or "").strip("/")
-        if not base:
-            raise RuntimeError("webdav_hostname is not configured")
-
-        # слепим корень и путь (оба POSIX-стайл), затем процитируем небезопасные символы (пробелы/кириллица)
-        joined_path = "/".join(p for p in [root, remote_path.lstrip("/")] if p)
-        full_url = f"{base}/{joined_path}"
-        full_url = quote(full_url, safe=":/%")
-
-        # Качаем потоково
-        resp = client.session.get(full_url, stream=True)
-        resp.raise_for_status()
+        full_url = _build_full_url(client, remote_path)
+        sess = getattr(client, "session", None)
+        if sess is None:
+            raise RuntimeError("WebDAV client has no 'session' to perform raw GET fallback")
 
         os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
-        with open(local_path, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
+        with sess.get(full_url, stream=True) as resp:
+            resp.raise_for_status()
+            with open(local_path, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
         return True
 
 
