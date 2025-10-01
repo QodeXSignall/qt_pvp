@@ -18,6 +18,44 @@ options = {
 
 client = Client(options)
 
+def _download_file_safe(client, remote_path: str, local_path: str) -> bool:
+    """
+    Пытается скачать через webdav3, а при KeyError('content-length') —
+    делает raw GET через client.session без требования Content-Length.
+    """
+    try:
+        client.download_sync(remote_path=remote_path, local_path=local_path)
+        return True
+    except KeyError as e:
+        if str(e).strip("'\"").lower() != "content-length":
+            raise
+        logger.warning(f"[REPORTS] Нет Content-Length у {remote_path}; fallback на raw GET")
+
+        # Собираем полный URL
+        from urllib.parse import quote
+
+        base = (client.options.get("webdav_hostname") or "").rstrip("/")
+        root = (client.options.get("webdav_root") or "").strip("/")
+        if not base:
+            raise RuntimeError("webdav_hostname is not configured")
+
+        # слепим корень и путь (оба POSIX-стайл), затем процитируем небезопасные символы (пробелы/кириллица)
+        joined_path = "/".join(p for p in [root, remote_path.lstrip("/")] if p)
+        full_url = f"{base}/{joined_path}"
+        full_url = quote(full_url, safe=":/%")
+
+        # Качаем потоково
+        resp = client.session.get(full_url, stream=True)
+        resp.raise_for_status()
+
+        os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
+        with open(local_path, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+        return True
+
+
 def append_report_line_to_cloud(
     remote_folder_path: str,
     created_start_time: str,
@@ -28,66 +66,88 @@ def append_report_line_to_cloud(
     """
     Создаёт (если нет) или обновляет reports.txt в заданной папке WebDAV, добавляя строку:
     "{created_start_time} {created_end_time} {file_name}"
-
-    :param remote_folder_path: Папка в облаке (WebDAV), где лежит reports.txt
-    :param created_start_time: Начало (строка, например "2025-09-03 12:34:56")
-    :param created_end_time:   Конец  (строка)
-    :param file_name:          Имя файла интереса/видео/папки (строка без перевода строки)
-    :param report_filename:    Имя файла отчёта (по умолчанию "reports.txt")
-    :return: True — если обновление прошло успешно, иначе False.
+    Все сетевые обращения выполняются с до 3 попыток.
     """
+    tmp_local = None
     try:
-        # Гарантируем существование целевой папки
-        if not create_folder_if_not_exists(client, remote_folder_path):
-            logger.error(f"[REPORTS] Папка {remote_folder_path} недоступна для записи")
-            return False
-
-        # Подготовка путей
+        # Подготовка путей и временного файла
         remote_file_path = posixpath.join(remote_folder_path, report_filename)
-        os.makedirs(settings.REPORTS_TEMP_FOLDER, exist_ok=True)
-        tmp_local = os.path.join(settings.REPORTS_TEMP_FOLDER, f"{uuid.uuid4().hex}.txt")
+        tmp_dir = getattr(settings, "REPORTS_TEMP_FOLDER", "/tmp")
+        os.makedirs(tmp_dir, exist_ok=True)
+        tmp_local = os.path.join(tmp_dir, f"{uuid.uuid4().hex}.txt")
 
-        # Строка для добавления
         line = f"{created_start_time} {created_end_time} {file_name}\n"
 
-        # Если reports.txt уже есть — скачиваем, аппендим и загружаем обратно
-        if client.check(remote_file_path):
-            # Скачали текущий файл
-            client.download_sync(remote_path=remote_file_path, local_path=tmp_local)
+        # Ретрай-цикл на все облачные операции
+        last_err = None
+        for attempt in range(1, 4):
+            try:
+                logger.debug(f"[REPORTS] attempt {attempt}/3 → {remote_file_path}")
 
-            # Добавляем перевод строки, если его не было в конце, и дописываем нашу строку
-            with open(tmp_local, "rb") as frb:
-                content = frb.read()
-            needs_nl = len(content) > 0 and not content.endswith(b"\n")
-            with open(tmp_local, "ab") as fab:
-                if needs_nl:
-                    fab.write(b"\n")
-                fab.write(line.encode("utf-8"))
-        else:
-            # Файла нет — создаём локально с единственной строкой
-            with open(tmp_local, "w", encoding="utf-8") as fw:
-                fw.write(line)
+                # 1) гарантируем наличие папки
+                if not create_folder_if_not_exists(client, remote_folder_path):
+                    raise RuntimeError(f"Папка {remote_folder_path} недоступна для записи")
 
-        # Загружаем обратно с повторами (используем уже готовую обёртку)
-        ok = upload_file_to_cloud(client, tmp_local, remote_file_path)
+                # 2) проверяем, существует ли отчёт
+                exists = False
+                try:
+                    exists = client.check(remote_file_path)
+                except Exception as e_check:
+                    # Некоторые WebDAV-сервера могут не поддерживать PROPFIND корректно
+                    logger.warning(f"[REPORTS] check({remote_file_path}) упал: {e_check}. Продолжаем как 'не существует'.")
+                    exists = False
 
-        # Чистим временный файл
-        try:
-            delete_local_file(tmp_local)
-        except Exception:
-            pass
+                # 3) либо скачиваем и аппендим, либо создаём заново
+                if exists:
+                    # безопасно скачиваем (с fallback)
+                    if not _download_file_safe(client, remote_file_path, tmp_local):
+                        raise RuntimeError(f"Не удалось скачать {remote_file_path}")
 
-        return ok
+                    # аккуратно добавим строку (с \n, если его не было)
+                    with open(tmp_local, "rb") as frb:
+                        content = frb.read()
+                    needs_nl = len(content) > 0 and not content.endswith(b"\n")
+                    with open(tmp_local, "ab") as fab:
+                        if needs_nl:
+                            fab.write(b"\n")
+                        fab.write(line.encode("utf-8"))
+                else:
+                    # создаём новый локальный файл с одной строкой
+                    with open(tmp_local, "w", encoding="utf-8") as fw:
+                        fw.write(line)
+
+                # 4) загружаем обратно (тоже под ретрай внешнего цикла)
+                ok = upload_file_to_cloud(client, tmp_local, remote_file_path)
+                if not ok:
+                    raise RuntimeError("upload_file_to_cloud вернул False")
+
+                logger.info(f"[REPORTS] Обновлён {remote_file_path}")
+                return True
+
+            except Exception as e:
+                last_err = e
+                logger.warning(f"[REPORTS] Ошибка на попытке {attempt}/3: {e}")
+                # на последней попытке упадём окончательно
+                if attempt < 3:
+                    # можно добавить небольшую паузу при желании:
+                    # time.sleep(0.5)
+                    continue
+                break
+
+        if last_err:
+            raise last_err
+        return False
 
     except Exception as e:
         logger.error(f"[REPORTS] Не удалось обновить {remote_folder_path}/{report_filename}: {e}\n{traceback.format_exc()}")
-        # Попробуем подчистить временный файл, если остался
+        return False
+    finally:
+        # Чистим временный файл
         try:
-            if 'tmp_local' in locals() and os.path.exists(tmp_local):
+            if tmp_local and os.path.exists(tmp_local):
                 delete_local_file(tmp_local)
         except Exception:
             pass
-        return False
 
 
 def parse_filename(filename):
