@@ -210,6 +210,7 @@ async def execute_download_task(jsession, download_task_url: str):
 
 async def wait_and_get_dwn_url(jsession, download_task_url):
     logger.info("Downloading...")
+    count = 0
     while True:
         response_json = await execute_download_task(
             jsession=jsession,
@@ -224,7 +225,10 @@ async def wait_and_get_dwn_url(jsession, download_task_url):
             logger.warning(f"Device is offline! {result}")
             return {"error": "Device is offline!"}
         else:
+            count += 1
             time.sleep(1)
+            if count % 10 == 0:
+                logger.info(f"Still downloading. Result {result}. Waiting {count} seconds...")
 
 
 
