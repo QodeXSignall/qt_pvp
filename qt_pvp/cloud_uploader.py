@@ -20,15 +20,9 @@ options = {
 client = Client(options)
 
 def _resolve_webdav_base_and_root(client):
-    """
-    Возвращает (base, root) для WebDAV-клиента.
-    base: 'https://dav.example.com'
-    root: 'some/root' (без ведущего '/'), либо '' если нет.
-    """
     base = ''
     root = ''
 
-    # Вариант 1: у некоторых версий есть client.options
     if hasattr(client, "options"):
         try:
             base = (client.options.get("webdav_hostname") or "").rstrip("/")
@@ -36,7 +30,6 @@ def _resolve_webdav_base_and_root(client):
         except Exception:
             pass
 
-    # Вариант 2: объект настроек client.webdav с полями hostname/root
     if not base and hasattr(client, "webdav"):
         try:
             base = (getattr(client.webdav, "hostname", "") or getattr(client.webdav, "webdav_hostname", "")).rstrip("/")
@@ -44,7 +37,6 @@ def _resolve_webdav_base_and_root(client):
         except Exception:
             pass
 
-    # Вариант 3: прямые поля (мало ли)
     if not base:
         base = (getattr(client, "hostname", "") or getattr(client, "webdav_hostname", "")).rstrip("/")
 
@@ -53,23 +45,50 @@ def _resolve_webdav_base_and_root(client):
 
     return base, root
 
-
 def _build_full_url(client, remote_path: str) -> str:
-    """
-    Собирает полный URL до remote_path с учётом base+root и percent-encoding.
-    """
     base, root = _resolve_webdav_base_and_root(client)
-    # Сшиваем POSIX-пути без двойных слешей
     joined_path = "/".join(p for p in [root, remote_path.lstrip("/")] if p)
-    # Кодируем каждый сегмент пути (оставляем /,:,% нетронутыми)
+    # кодируем по сегментам, чтобы пробелы/кириллица были верно процитированы
     quoted_path = "/".join(quote(seg, safe="") for seg in joined_path.split("/"))
     return f"{base}/{quoted_path}"
 
+def _resolve_auth(client):
+    """
+    Возвращает (auth_obj | None). Сначала пробуем session.auth,
+    иначе собираем из client.webdav/options (Basic или Digest).
+    """
+    from requests.auth import HTTPBasicAuth, HTTPDigestAuth
+
+    sess = getattr(client, "session", None)
+    if sess is not None and getattr(sess, "auth", None):
+        return sess.auth
+
+    login = password = None
+    auth_type = None
+
+    if hasattr(client, "webdav"):
+        login = getattr(client.webdav, "login", None) or getattr(client.webdav, "user", None)
+        password = getattr(client.webdav, "password", None)
+        auth_type = (getattr(client.webdav, "auth", None) or "").lower()
+
+    if (login is None or password is None) and hasattr(client, "options"):
+        opt = client.options
+        login = login or opt.get("webdav_login")
+        password = password or opt.get("webdav_password")
+        auth_type = (auth_type or opt.get("webdav_auth_type") or "").lower()
+
+    if not login or not password:
+        return None  # надеемся на already-configured sess (но в твоём случае это и было проблемой)
+
+    if "digest" in (auth_type or ""):
+        return HTTPDigestAuth(login, password)
+    # по умолчанию — Basic
+    return HTTPBasicAuth(login, password)
 
 def _download_file_safe(client, remote_path: str, local_path: str) -> bool:
     """
-    Сначала пробует стандартный download_sync.
-    При KeyError('content-length') — качает потоково через client.session по собранному URL.
+    Сначала стандартный download_sync.
+    При KeyError('content-length') — raw GET через client.session с явной auth.
     """
     try:
         client.download_sync(remote_path=remote_path, local_path=local_path)
@@ -84,8 +103,9 @@ def _download_file_safe(client, remote_path: str, local_path: str) -> bool:
         if sess is None:
             raise RuntimeError("WebDAV client has no 'session' to perform raw GET fallback")
 
+        auth = _resolve_auth(client)  # ← ключевое: даём креды явно
         os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
-        with sess.get(full_url, stream=True) as resp:
+        with sess.get(full_url, stream=True, allow_redirects=True, auth=auth) as resp:
             resp.raise_for_status()
             with open(local_path, "wb") as f:
                 for chunk in resp.iter_content(chunk_size=8192):
