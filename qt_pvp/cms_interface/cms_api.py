@@ -14,6 +14,16 @@ import time
 import cv2
 import os
 
+import asyncio
+# глобальный словарь семафоров по девайсам
+_GET_VIDEO_LOCKS = {}
+def _get_video_sem_for(dev_id: str) -> asyncio.Semaphore:
+    sem = _GET_VIDEO_LOCKS.get(dev_id)
+    if sem is None:
+        sem = asyncio.Semaphore(1)  # строго по одному запросу к getVideoFileInfo на девайс
+        _GET_VIDEO_LOCKS[dev_id] = sem
+    return sem
+
 
 @functions.cms_data_get_decorator()
 def get_online_devices(jsession, device_id=None):
@@ -48,11 +58,28 @@ def get_video(jsession, device_id: str, start_time_seconds: int,
     url = f"{settings.cms_host}/StandardApiAction_getVideoFileInfo.action"
     headers = {
         "User-Agent": "qt_pvp/1.0",
-        "Connection": "close",   # тушим keep-alive, меньше висячих коннектов
+        "Connection": "close",
     }
     logger.debug(f"Getting request {url}. \nParams: {params}")
-    # Таймауты раздельно: connect=5s, read=25s
-    return requests.get(url, params=params, headers=headers, timeout=(5, 25))
+
+    # НОВОЕ: сессия + ретраи
+    retry = Retry(
+        total=3, connect=2, read=2,
+        backoff_factor=0.6,
+        status_forcelist=[502, 503, 504],
+        allowed_methods=["GET"],
+        raise_on_status=False
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    sess = requests.Session()
+    sess.mount("http://", adapter)
+    sess.mount("https://", adapter)
+    try:
+        # НОВОЕ: read-timeout = 60
+        return sess.get(url, params=params, headers=headers, timeout=(5, 60))
+    finally:
+        sess.close()
+
 
 
 
@@ -226,7 +253,7 @@ async def wait_and_get_dwn_url(jsession, download_task_url):
             return {"error": "Device is offline!"}
         else:
             count += 1
-            time.sleep(1)
+            await asyncio.sleep(1)
             if count % 60 == 0:
                 logger.info(f"Still downloading. Response {response_json}. Waiting {count} seconds...")
 
@@ -454,10 +481,11 @@ async def download_video(
             f"(base=[{base_start}..{base_end}], Δ={delta})"
         )
 
-        response = await asyncio.to_thread(
-            get_video, jsession, reg_id, cur_start, cur_end,
-            year, month, day, channel_id
-        )
+        async with _get_video_sem_for(reg_id):
+            response = await asyncio.to_thread(
+                get_video, jsession, reg_id, cur_start, cur_end,
+                year, month, day, channel_id
+            )
 
         try:
             response_json = response.json()

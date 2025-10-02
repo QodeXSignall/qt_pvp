@@ -20,6 +20,7 @@ class Main:
         self.TIME_FMT = "%Y-%m-%d %H:%M:%S"
         self._global_interests_sem = asyncio.Semaphore(settings.config.getint("Process", "MAX_GLOBAL_INTERESTS"))
         self._per_device_sem = {}
+        self._devices_sem = asyncio.Semaphore(settings.config.getint("Process", "MAX_DEVICES_CONCURRENT"))
 
     def _get_device_sem(self, reg_id):
         sem = self._per_device_sem.get(reg_id)
@@ -136,6 +137,7 @@ class Main:
                 datetime.datetime.strptime(start_time, TIME_FMT)
         ).total_seconds()
 
+        """
         max_span = settings.config.getint("Interests", "DOWNLOADING_INTERVAL") * 60
         if time_difference > max_span:
             end_time = (
@@ -145,6 +147,17 @@ class Main:
         else:
             logger.debug(f"f{reg_id}. Time difference is too short ({time_difference} сек.)")
             return
+        """
+
+        max_span = settings.config.getint("Interests", "DOWNLOADING_INTERVAL") * 60
+        if time_difference <= 0:
+            logger.debug(f"{reg_id}. Пустое окно ({time_difference} сек.).")
+            return
+        if time_difference > max_span:
+            end_time = (datetime.datetime.strptime(start_time, TIME_FMT) +
+                        datetime.timedelta(seconds=max_span)).strftime(TIME_FMT)
+        # иначе оставляем end_time как есть и работаем с «коротким» окном
+
 
         logger.info(f"{reg_id} Начало: {start_time}, Конец: {end_time}")
 
@@ -421,10 +434,24 @@ class Main:
         logger.info("Mainloop has been launched with success.")
         while True:
             devices_online = self.get_devices_online()
+
+            tasks = []
             for device_dict in devices_online:
                 reg_id = device_dict["did"]
                 plate = device_dict["vid"]
-                await self.operate_device(reg_id, plate)
+
+                async def _run_with_limit(rid, pl):
+                    async with self._devices_sem:
+                        await self.operate_device(rid, pl)
+
+                tasks.append(asyncio.create_task(_run_with_limit(reg_id, plate)))
+
+            if tasks:
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                for r in results:
+                    if isinstance(r, Exception):
+                        logger.error("operate_device raised: %r", r)
+
             await asyncio.sleep(3)
 
     def check_if_reg_online(self, reg_id):
