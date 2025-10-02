@@ -14,7 +14,6 @@ import time
 import cv2
 import os
 
-import asyncio
 # глобальный словарь семафоров по девайсам
 _GET_VIDEO_LOCKS = {}
 def _get_video_sem_for(dev_id: str) -> asyncio.Semaphore:
@@ -189,12 +188,6 @@ def get_device_track(jsession: str, device_id: str, start_time: str,
         sess.close()
 
 
-@functions.cms_data_get_decorator()
-def get_devices(jsessuibg):
-    response = requests.get(
-        f"{settings.cms_host}/StandardApiAction_queryUserVehicle.action?")
-
-
 def get_device_status(jsession: str, device_id: str):
     response = requests.get(
         f"{settings.cms_host}/StandardApiAction_getDeviceStatus.action?",
@@ -239,9 +232,10 @@ async def wait_and_get_dwn_url(jsession, download_task_url):
     logger.info("Downloading...")
     count = 0
     while True:
-        response_json = await execute_download_task(
-            jsession=jsession,
-            download_task_url=download_task_url)
+        response_json = await execute_download_task(jsession=jsession, download_task_url=download_task_url)
+        if not response_json:
+            await asyncio.sleep(1)
+            continue
         result = response_json["result"]
         if result == 11 and response_json["oldTaskAll"]["dph"]:
             logger.info(f"{response_json['oldTaskAll']['id']}. Download done!")
@@ -340,7 +334,7 @@ async def get_frames(jsession, reg_id: str,
             # Пробуем кадр из любого файла
             for video_path in videos_paths:
                 try:
-                    frame_path = extract_first_frame(video_path)  # должен вернуть None при неудаче
+                    frame_path = await asyncio.to_thread(extract_first_frame, video_path)
                 except Exception as ex:
                     logger.exception(f"{reg_id}: ch={channel_id} extract error: {ex}")
                     frame_path = None
@@ -487,17 +481,20 @@ async def download_video(
                 year, month, day, channel_id
             )
 
-        try:
-            response_json = response.json()
-        except Exception as e:
-            logger.warning(f"{reg_id}: парсинг JSON не удался: {e}. Ждём 2с и повторяем ту же попытку.")
-            await asyncio.sleep(2)
-            # повторяем тот же delta (не сдвигаем i)
-            # проще — continue, цикл пойдёт на следующий delta, но мы хотим повторить ту же попытку.
-            # Тогда используем while: однако чтобы оставить for, сделаем маленькую «переигровку»:
-            # Просто ещё раз крутим одну и ту же итерацию:
-            # Решение простое: рекурсивный локальный повтор избегаем. Ок — примем, что неудачный JSON двинет нас дальше.
-            # Если нужна строгая повторяемость той же попытки — замените на while с ручным i.
+        for _ in range(2):  # до двух попыток на том же delta
+            async with _get_video_sem_for(reg_id):
+                response = await asyncio.to_thread(
+                    get_video, jsession, reg_id, cur_start, cur_end,
+                    year, month, day, channel_id
+                )
+            try:
+                response_json = response.json()
+                break
+            except Exception as e:
+                logger.warning(f"{reg_id}: JSON parse failed on window [{cur_start}..{cur_end}]: {e}; retry same delta")
+                await asyncio.sleep(2)
+        else:
+            # обе попытки не удались — уходим к следующему delta
             continue
 
         result = response_json.get("result")

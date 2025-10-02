@@ -321,7 +321,7 @@ def create_interest_folder_path(interest_name, dest_directory):
         return None  # Явно
 
     return {"register_folder_path": registr_folder,
-            "date_forder_path": date_folder_path,
+            "date_folder_path": date_folder_path,
             "interest_folder_path": interest_folder_path}
 
 def upload_file(file_path, interest_folder_path):

@@ -228,7 +228,7 @@ class Main:
                     data=enriched["report"], remote_folder_path=enriched["cloud_folder"]
                 )
                 cloud_uploader.append_report_line_to_cloud(
-                    remote_folder_path=cloud_paths["date_forder_path"],
+                    remote_folder_path=cloud_paths["date_folder_path"],
                     created_start_time=created_start_time.strftime(self.TIME_FMT),
                     created_end_time=datetime.datetime.now().strftime(self.TIME_FMT),
                     file_name=interest_name
