@@ -1,12 +1,11 @@
-import time
-import traceback
-from urllib.parse import quote
-
 from webdav3.client import Client
 from qt_pvp.logger import logger
+from urllib.parse import quote
 from qt_pvp import settings
+import traceback
 import posixpath
 import json
+import time
 import uuid
 import os
 

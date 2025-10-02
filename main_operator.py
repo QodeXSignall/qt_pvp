@@ -3,14 +3,11 @@ from qt_pvp import functions as main_funcs
 from qt_pvp.cms_interface import cms_api
 from qt_pvp import cloud_uploader
 from qt_pvp.logger import logger
-from pathlib import Path
 from qt_pvp import settings
 import asyncio
-import threading
 import traceback
 import datetime
 import shutil
-import time
 import os
 
 
@@ -21,6 +18,15 @@ class Main:
         self.output_format = output_format
         self.devices_in_progress = []
         self.TIME_FMT = "%Y-%m-%d %H:%M:%S"
+        self._global_interests_sem = asyncio.Semaphore(settings.config.getint("Process", "MAX_GLOBAL_INTERESTS"))
+        self._per_device_sem = {}
+
+    def _get_device_sem(self, reg_id):
+        sem = self._per_device_sem.get(reg_id)
+        if sem is None:
+            sem = asyncio.Semaphore(settings.config.getint("Process", "MAX_INTERESTS_PER_DEVICE"))
+            self._per_device_sem[reg_id] = sem
+        return sem
 
     def video_ready_trigger(self, *args, **kwargs):
         logger.info("Dummy trigger activated")
@@ -39,10 +45,12 @@ class Main:
         self.devices_in_progress.append(reg_id)
         try:
             await self.download_reg_videos(reg_id, plate, by_trigger=True)
-        except:
+        except Exception:
             logger.error(traceback.format_exc())
-        else:
-            self.devices_in_progress.remove(reg_id)
+        finally:
+            # гарантированно освобождаем
+            if reg_id in self.devices_in_progress:
+                self.devices_in_progress.remove(reg_id)
 
     def get_interests(self, reg_id, reg_info, start_time, stop_time):
         max_extra_pulls = 8  # максимум шагов назад по минуте
@@ -102,9 +110,9 @@ class Main:
         begin_time = datetime.datetime.now()
 
         # Проверка доступности регистратора
-        if not self.check_if_reg_online(reg_id):
-            logger.info(f"{reg_id} недоступен.")
-            return
+        #if not self.check_if_reg_online(reg_id):
+        #    logger.info(f"{reg_id} недоступен.")
+        #    return
 
         # Информация о регистраторе
         reg_info = main_funcs.get_reg_info(reg_id) or main_funcs.create_new_reg(reg_id, plate)
@@ -149,62 +157,99 @@ class Main:
 
         logger.info(f"{reg_id}: Найдено {len(interests)} интересов")
         interests = main_funcs.merge_overlapping_interests(interests)
+        interests = main_funcs.filter_already_processed(reg_id, interests)
+        logger.info(f"{reg_id}: К запуску {len(interests)} интересов (после фильтра processed).")
 
         # Единая стратегия расширения окна — теперь задаём здесь,
         # а применяет её download_video (через download_interest_videos).
         adjustment_sequence = (0, 15, 30, 45)
 
-        for interest in interests:
-            created_start_time = datetime.datetime.now()
-            logger.info(f"Работаем с интересом {interest}. {interests.index(interest)}/{interests}")
-            if cloud_uploader.interest_folder_exists(interest["name"], settings.CLOUD_PATH):
-                logger.info(f"[DEDUP] В облаке уже есть папка интереса {interest['name']} — пропускаем.")
-                main_funcs._save_processed(reg_id, interest["name"])
-                main_funcs.save_new_reg_last_upload_time(reg_id, interest["end_time"])
-                continue
+        async def _process_one_interest(interest: dict) -> str | None:
+            # ограничители: глобально и на устройство
+            async with self._global_interests_sem, self._get_device_sem(reg_id):
+                created_start_time = datetime.datetime.now()
+                interest_name = interest["name"]
 
-            cloud_paths = cloud_uploader.create_interest_folder_path(
-                interest_name=interest["name"],
-                dest_directory=settings.CLOUD_PATH
-            )
-            interest_cloud_folder = cloud_paths["interest_folder_path"]
-            logger.debug(f"{reg_id}: Начинаем скачивание видео для интереса {interest['name']}")
-            enriched = await cms_api.download_interest_videos(
-                self.jsession,
-                interest,
-                chanel_id,
-                reg_id=reg_id,
-                adjustment_sequence=adjustment_sequence,
-            )
+                # Дедуп по облаку (быстрый выход)
+                if cloud_uploader.interest_folder_exists(interest_name, settings.CLOUD_PATH):
+                    logger.info(f"[DEDUP] В облаке уже есть папка интереса {interest_name} — пропускаем.")
+                    main_funcs._save_processed(reg_id, interest_name)
+                    return interest["end_time"]  # вернём конец интереса для будущего max()
 
-            if not enriched:
-                logger.warning(f"{reg_id}: Не удалось получить видеофайлы для интереса")
-                main_funcs.save_new_reg_last_upload_time(reg_id, interest["end_time"])
-                continue
+                # Создаём пути в облаке под интерес
+                cloud_paths = cloud_uploader.create_interest_folder_path(
+                    interest_name=interest_name,
+                    dest_directory=settings.CLOUD_PATH
+                )
+                if not cloud_paths:
+                    logger.error(f"{reg_id}: Не удалось создать папки для {interest_name}. Пропускаем интерес.")
+                    return interest["end_time"]
 
-            enriched["cloud_folder"] = interest_cloud_folder
+                interest_cloud_folder = cloud_paths["interest_folder_path"]
 
-            # Обработка и загрузка
-            await self.process_and_upload_videos_async(reg_id, enriched)
+                logger.debug(f"{reg_id}: Начинаем скачивание видео для {interest_name}")
+                enriched = await cms_api.download_interest_videos(
+                    self.jsession, interest, chanel_id, reg_id=reg_id,
+                    adjustment_sequence=adjustment_sequence,
+                )  # вернёт interest с file_paths, либо None :contentReference[oaicite:3]{index=3}
 
-            if settings.config.getboolean("General", "pics_before_after"):
-                upload_status = await self.upload_frames_before_after(reg_id, enriched)
-                if upload_status["upload_status"]:
-                    for frame in upload_status["frames"]:
-                        logger.info(f"{reg_id}: Загрузка прошла успешно. Удаляем локальные фото-файлы ({frame}).")
+                if not enriched:
+                    logger.warning(f"{reg_id}: Не удалось получить видеофайлы для {interest_name}")
+                    # Важно: всё равно вернём end_time, чтобы батч мог продвинуть last_upload_time вперёд
+                    return interest["end_time"]
 
-            cloud_uploader.upload_dict_as_json_to_cloud(
-                data=enriched["report"],
-                remote_folder_path=enriched["cloud_folder"]
-            )
-            main_funcs.save_new_reg_last_upload_time(reg_id, interest["end_time"])
+                enriched["cloud_folder"] = interest_cloud_folder
 
-            cloud_uploader.append_report_line_to_cloud(remote_folder_path=cloud_paths["date_forder_path"],
-                                                       created_start_time=created_start_time.strftime(TIME_FMT),
-                                                       created_end_time=datetime.datetime.now().strftime(TIME_FMT),
-                                                       file_name=interest["name"])
+                # Обработка и загрузка видео (как у тебя сейчас)
+                await self.process_and_upload_videos_async(reg_id, enriched)
 
-        logger.info(f"{reg_id}. Все интересы обработаны.")
+                # Кадры до/после — оставляем как есть (пока без параллели каналов)
+                if settings.config.getboolean("General", "pics_before_after"):
+                    upload_status = await self.upload_frames_before_after(reg_id, enriched)
+                    if upload_status["upload_status"]:
+                        for frame in upload_status["frames_before"] + upload_status["frames_after"]:
+                            logger.info(f"{reg_id}: Загрузка фото ок. Удаляем локальный файл {frame}.")
+
+                # Отчёты
+                cloud_uploader.upload_dict_as_json_to_cloud(
+                    data=enriched["report"], remote_folder_path=enriched["cloud_folder"]
+                )
+                cloud_uploader.append_report_line_to_cloud(
+                    remote_folder_path=cloud_paths["date_forder_path"],
+                    created_start_time=created_start_time.strftime(self.TIME_FMT),
+                    created_end_time=datetime.datetime.now().strftime(self.TIME_FMT),
+                    file_name=interest_name
+                )
+
+                # Маркируем интерес как обработанный (локально)
+                main_funcs._save_processed(reg_id, interest_name)
+
+                return interest["end_time"]
+
+        # Стартуем задачи (сами ограничители внутри)
+        tasks = [asyncio.create_task(_process_one_interest(it)) for it in interests]
+
+        # Собираем результаты по мере готовности
+        end_times: list[str] = []
+        for coro in asyncio.as_completed(tasks):
+            try:
+                et = await coro
+                if et:
+                    end_times.append(et)
+            except Exception:
+                logger.error(f"{reg_id}: Ошибка в задаче интереса:\n{traceback.format_exc()}")
+
+        # Обновляем last_upload_time ОДИН раз — максимумом из завершённых интересов,
+        # либо (если все упали/ничего не пришло) — концом окна end_time
+        if end_times:
+            new_last = max(end_times)
+        else:
+            new_last = end_time  # конец окна, чтобы не зациклиться на том же диапазоне
+        main_funcs.save_new_reg_last_upload_time(reg_id, new_last)
+
+        logger.info(
+            f"{reg_id}. Пакет интересов завершён: {len(end_times)}/{len(interests)}; last_upload_time -> {new_last}")
+
 
 
     async def upload_frames_before_after(self, reg_id, enriched):
@@ -293,7 +338,7 @@ class Main:
             logger.info(f"{reg_id}: Загрузка прошла успешно.")
             if settings.config.getboolean("General", "del_source_video_after_upload"):
                 if os.path.exists(result["output_video_path"]):
-                    logger.info(f"{reg_id}: Удаляем локальный файл ({result["output_video_path"]}).")
+                    logger.info(f"{reg_id}: Удаляем локальный файл ({result['output_video_path']}).")
                     os.remove(result["output_video_path"])
                     for file_path in result["files_to_delete"]:
                         if os.path.exists(file_path):
