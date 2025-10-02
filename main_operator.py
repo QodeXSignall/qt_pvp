@@ -37,7 +37,7 @@ class Main:
         devices_online = cms_api.get_online_devices(self.jsession)
         devices_online = devices_online.json()["onlines"]
         if devices_online:
-            logger.debug(f"Got devices online: {devices_online}")
+            logger.info(f"Got devices online: {devices_online}")
         return devices_online
 
     async def operate_device(self, reg_id, plate):
@@ -184,10 +184,10 @@ class Main:
                 interest_name = interest["name"]
 
                 # Дедуп по облаку (быстрый выход)
-                if cloud_uploader.interest_folder_exists(interest_name, settings.CLOUD_PATH):
-                    logger.info(f"[DEDUP] В облаке уже есть папка интереса {interest_name} — пропускаем.")
-                    main_funcs._save_processed(reg_id, interest_name)
-                    return interest["end_time"]  # вернём конец интереса для будущего max()
+                #if cloud_uploader.interest_folder_exists(interest_name, settings.CLOUD_PATH):
+                #    logger.info(f"[DEDUP] В облаке уже есть папка интереса {interest_name} — пропускаем.")
+                #    main_funcs._save_processed(reg_id, interest_name)
+                #    return interest["end_time"]  # вернём конец интереса для будущего max()
 
                 # Создаём пути в облаке под интерес
                 cloud_paths = cloud_uploader.create_interest_folder_path(
