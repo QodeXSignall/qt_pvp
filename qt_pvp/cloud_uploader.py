@@ -9,6 +9,10 @@ import time
 import uuid
 import os
 
+class CloudOffline(RuntimeError):
+    """CMS: устройство офлайн — нужно отложить обработку интереса и попробовать позже."""
+    pass
+
 # Настройки подключения к WebDAV серверу
 options = {
     'webdav_hostname': os.environ.get("webdav_hostname"),
@@ -246,10 +250,23 @@ def frame_exists_cloud(folder_path: str, channel_id: int) -> bool:
     :param channel_id: подстрока, которую ищем в названии файла
     :return: True если файл найден, False если нет или произошла ошибка
     """
+    create_folder_if_not_exists(folder_path)
     try:
         # Получаем список содержимого папки
-        files = client.list(folder_path)
-
+        count = 0
+        while count < 2:
+            try:
+                files = client.list(folder_path)
+                break
+            except Exception as e:
+                logger.warning(
+                    f"Ошибка при создании папки {folder_path} на WebDAV! ({e}) "
+                    f"Попытка {count+1}/2")
+                count += 1
+                time.sleep(1)
+        if count > 2:
+            logger.critical(f"Не удалось создать папку {folder_path}")
+            raise CloudOffline(f"Не удалось получить список кдаров в папке {folder_path}")
         # Проверяем каждый элемент
         for f in files:
             # webdav3 возвращает список путей, иногда включая саму папку
@@ -270,7 +287,7 @@ def frame_exists(interest_name: str) -> bool:
         logger.warning(f"Не удалось проверить наличие файла {interest_video_name}: {e}")
         return False
 
-def create_folder_if_not_exists(client, folder_path):
+def create_folder_if_not_exists(folder_path):
     """
     Проверяем существование папки и создаем её, если она отсутствует.
     """
