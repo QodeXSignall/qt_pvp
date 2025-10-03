@@ -250,7 +250,7 @@ def frame_exists_cloud(folder_path: str, channel_id: int) -> bool:
     :param channel_id: подстрока, которую ищем в названии файла
     :return: True если файл найден, False если нет или произошла ошибка
     """
-    create_folder_if_not_exists(folder_path)
+    create_folder_if_not_exists(client, folder_path)
     try:
         # Получаем список содержимого папки
         count = 0
@@ -287,7 +287,7 @@ def frame_exists(interest_name: str) -> bool:
         logger.warning(f"Не удалось проверить наличие файла {interest_video_name}: {e}")
         return False
 
-def create_folder_if_not_exists(folder_path):
+def create_folder_if_not_exists(client, folder_path):
     """
     Проверяем существование папки и создаем её, если она отсутствует.
     """
