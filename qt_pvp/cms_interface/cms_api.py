@@ -320,7 +320,7 @@ async def get_frames(jsession, reg_id: str,
             except Exception as ex:
                 logger.exception(f"{reg_id}: ch={channel_id} extract error: {ex}")
 
-        return frames
+    return frames
 
 
 
