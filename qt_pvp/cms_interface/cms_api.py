@@ -1,14 +1,16 @@
-from typing import Iterable, List, Optional
 from qt_pvp.cms_interface import functions
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from qt_pvp.logger import logger
 from qt_pvp import settings
+from httpx import Timeout
+from typing import List
 import numpy as np
 import datetime
 import requests
 import aiohttp
 import asyncio
+import httpx
 import uuid
 import time
 import cv2
@@ -48,12 +50,12 @@ def login():
     return data
 
 
-@functions.cms_data_get_decorator()
-def get_video(jsession, device_id: str, start_time_seconds: int,
-              end_time_seconds: int, year: int, month: int, day: int,
-              chanel_id: int = 0, fileattr: int = 2):
+@functions.cms_data_get_decorator()  # см. пункт 3 про декоратор
+async def get_video(jsession, device_id: str, start_time_seconds: int,
+                    end_time_seconds: int, year: int, month: int, day: int,
+                    channel_id: int = 0, fileattr: int = 2):
     params = {
-        "DevIDNO": device_id, "LOC": 1, "CHN": chanel_id,
+        "DevIDNO": device_id, "LOC": 1, "CHN": channel_id,
         "YEAR": year, "MON": month, "DAY": day,
         "RECTYPE": -1, "FILEATTR": fileattr,
         "BEG": start_time_seconds, "END": end_time_seconds,
@@ -67,24 +69,29 @@ def get_video(jsession, device_id: str, start_time_seconds: int,
     }
     logger.debug(f"Getting request {url}. \nParams: {params}")
 
-    # НОВОЕ: сессия + ретраи
-    retry = Retry(
-        total=3, connect=2, read=2,
-        backoff_factor=0.6,
-        status_forcelist=[502, 503, 504],
-        allowed_methods=["GET"],
-        raise_on_status=False
-    )
-    adapter = HTTPAdapter(max_retries=retry)
-    sess = requests.Session()
-    sess.mount("http://", adapter)
-    sess.mount("https://", adapter)
-    try:
-        # НОВОЕ: read-timeout = 60
-        return sess.get(url, params=params, headers=headers, timeout=(5, 60))
-    finally:
-        sess.close()
+    limits = httpx.Limits(max_connections=10, max_keepalive_connections=5)
+    timeout = Timeout(60.0, connect=5.0)
 
+    async with httpx.AsyncClient(limits=limits, timeout=timeout) as client:
+        retries = 3
+        backoff = 0.6
+        last_exc = None
+        for attempt in range(1, retries + 1):
+            try:
+                resp = await client.get(url, params=params, headers=headers)
+                if resp.status_code in (502, 503, 504):
+                    raise httpx.HTTPStatusError(
+                        f"Bad status {resp.status_code}", request=resp.request, response=resp
+                    )
+                return resp  # httpx.Response; .json() синхронный
+            except (httpx.RequestError, httpx.HTTPStatusError) as e:
+                last_exc = e
+                logger.warning(f"[Attempt {attempt}/{retries}] Ошибка при запросе: {e}")
+                if attempt < retries:
+                    await asyncio.sleep(backoff * attempt)
+                else:
+                    raise
+        raise last_exc if last_exc else RuntimeError("Неизвестная ошибка при get_video")
 
 
 
@@ -452,8 +459,8 @@ async def download_video(
 
         for _ in range(2):  # до двух попыток на том же delta
             async with _get_video_sem_for(reg_id):
-                response = await asyncio.to_thread(
-                    get_video, jsession, reg_id, cur_start, cur_end,
+                response = await get_video(
+                    jsession, reg_id, cur_start, cur_end,
                     year, month, day, channel_id
                 )
             try:

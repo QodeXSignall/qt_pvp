@@ -4,8 +4,8 @@ from datetime import datetime, timezone
 from bisect import bisect_left
 from qt_pvp.logger import logger
 from qt_pvp import settings
+import inspect
 import datetime
-import requests
 import functools
 import asyncio
 import time
@@ -1410,51 +1410,117 @@ def cms_data_get_decorator_async(max_retries=3, delay=1):
     return decorator
 
 
-def cms_data_get_decorator(tag='execute func'):
+
+# опционально: если httpx/requests могут отсутствовать в окружении
+try:
+    import httpx
+    HTTPX_ERRORS = (httpx.RequestError,)
+except Exception:  # модуль может быть не установлен
+    HTTPX_ERRORS = tuple()
+
+try:
+    import requests
+    REQUESTS_ERRORS = (
+        requests.exceptions.ReadTimeout,
+        requests.exceptions.ConnectTimeout,
+        requests.exceptions.ConnectionError,
+    )
+except Exception:
+    REQUESTS_ERRORS = tuple()
+
+
+def cms_data_get_decorator(tag: str = "execute func"):
+    """
+    Универсальный декоратор: поддерживает и sync, и async функции.
+    Повторяет запрос при:
+      - HTTP status != 200
+      - ошибке парсинга JSON
+      - data.get("result") == 24 (устройства «заняты»)
+      - сетевых ошибках httpx/requests
+    Экспоненциальный backoff: старт 1.0с, множитель 1.5, максимум 10.0с
+    """
     def decorator(func):
-        def wrapper(*args, **kwargs):
-            backoff = 1.0  # сек
-            while True:
-                try:
-                    response = func(*args, **kwargs)
-
-                    # если HTTP не 200 — тоже ретраим
-                    if response.status_code != 200:
-                        logger.warning(f"CMS HTTP {response.status_code}; retry in {backoff:.1f}s")
-                        time.sleep(backoff)
-                        backoff = min(backoff * 1.5, 10.0)
-                        continue
-
-                    # попытка распарсить JSON
+        if inspect.iscoroutinefunction(func):
+            # ==== ASYNC ВЕТКА ====
+            @functools.wraps(func)
+            async def async_wrapper(*args, **kwargs):
+                backoff = 1.0
+                while True:
                     try:
-                        data = response.json()
-                    except Exception as je:
-                        logger.warning(f"CMS JSON parse error: {je}; retry in {backoff:.1f}s")
+                        response = await func(*args, **kwargs)
+
+                        # HTTP-код
+                        if getattr(response, "status_code", 0) != 200:
+                            logger.warning(f"[{tag}] CMS HTTP {getattr(response, 'status_code', '???')}; "
+                                           f"retry in {backoff:.1f}s")
+                            await asyncio.sleep(backoff)
+                            backoff = min(backoff * 1.5, 10.0)
+                            continue
+
+                        # JSON
+                        try:
+                            data = response.json()
+                        except Exception as je:
+                            logger.warning(f"[{tag}] CMS JSON parse error: {je}; retry in {backoff:.1f}s")
+                            await asyncio.sleep(backoff)
+                            backoff = min(backoff * 1.5, 10.0)
+                            continue
+
+                        # Спец-код прошивки
+                        if data.get("result") == 24:
+                            logger.debug(f"[{tag}] CMS busy (24); retry in {backoff:.1f}s")
+                            await asyncio.sleep(backoff)
+                            backoff = min(backoff * 1.5, 10.0)
+                            continue
+
+                        return response
+
+                    except (*HTTPX_ERRORS, *REQUESTS_ERRORS, asyncio.TimeoutError) as err:
+                        logger.warning(f"[{tag}] Connection problem with CMS: {err}; retry in {backoff:.1f}s")
+                        await asyncio.sleep(backoff)
+                        backoff = min(backoff * 1.5, 10.0)
+
+            return async_wrapper
+
+        else:
+            # ==== SYNC ВЕТКА (как раньше) ====
+            @functools.wraps(func)
+            def sync_wrapper(*args, **kwargs):
+                backoff = 1.0
+                while True:
+                    try:
+                        response = func(*args, **kwargs)
+
+                        if getattr(response, "status_code", 0) != 200:
+                            logger.warning(f"[{tag}] CMS HTTP {getattr(response, 'status_code', '???')}; "
+                                           f"retry in {backoff:.1f}s")
+                            time.sleep(backoff)
+                            backoff = min(backoff * 1.5, 10.0)
+                            continue
+
+                        try:
+                            data = response.json()
+                        except Exception as je:
+                            logger.warning(f"[{tag}] CMS JSON parse error: {je}; retry in {backoff:.1f}s")
+                            time.sleep(backoff)
+                            backoff = min(backoff * 1.5, 10.0)
+                            continue
+
+                        if data.get("result") == 24:
+                            logger.debug(f"[{tag}] CMS busy (24); retry in {backoff:.1f}s")
+                            time.sleep(backoff)
+                            backoff = min(backoff * 1.5, 10.0)
+                            continue
+
+                        return response
+
+                    except REQUESTS_ERRORS as err:
+                        logger.warning(f"[{tag}] Connection problem with CMS: {err}; retry in {backoff:.1f}s")
                         time.sleep(backoff)
                         backoff = min(backoff * 1.5, 10.0)
-                        continue
 
-                    # Специфичные коды CMS
-                    result = data.get("result")
-                    # 24 — «busy/processing» у части прошивок — просто ждём ещё
-                    if result == 24:
-                        logger.debug(f"CMS busy (24); retry in {backoff:.1f}s")
-                        time.sleep(backoff)
-                        backoff = min(backoff * 1.5, 10.0)
-                        continue
+            return sync_wrapper
 
-                    # Успех или осмысленный ответ — отдаём наверх;
-                    # пусть уже вызывающая логика решает, что делать с result=0 и т.п.
-                    return response
-
-                except (requests.exceptions.ReadTimeout,
-                        requests.exceptions.ConnectTimeout,
-                        requests.exceptions.ConnectionError) as err:
-                    logger.warning(f"Connection problem with CMS: {err}; retry in {backoff:.1f}s")
-                    time.sleep(backoff)
-                    backoff = min(backoff * 1.5, 10.0)
-
-        return wrapper
     return decorator
 
 

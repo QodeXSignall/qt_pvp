@@ -6,3 +6,4 @@ opencv-python
 urllib3
 numpy
 portalocker
+httpx
