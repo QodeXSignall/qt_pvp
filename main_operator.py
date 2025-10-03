@@ -182,10 +182,9 @@ class Main:
                 if not cloud_paths:
                     logger.error(f"{reg_id}: Не удалось создать папки для {interest_name}. Пропускаем интерес.")
                     return interest["end_time"]
+                interest_cloud_folder = cloud_paths["interest_folder_path"]
 
                 if not cloud_uploader.interest_video_exists(interest_name):
-                    interest_cloud_folder = cloud_paths["interest_folder_path"]
-
                     logger.debug(f"{reg_id}: Начинаем скачивание видео для {interest_name}")
                     enriched = await cms_api.download_interest_videos(
                         self.jsession, interest, chanel_id, reg_id=reg_id,
