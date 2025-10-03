@@ -22,7 +22,6 @@ class Main:
         self._global_interests_sem = asyncio.Semaphore(settings.config.getint("Process", "MAX_GLOBAL_INTERESTS"))
         self._per_device_sem = {}
         self._devices_sem = asyncio.Semaphore(settings.config.getint("Process", "MAX_DEVICES_CONCURRENT"))
-        self._max_cms_concurrent = asyncio.Semaphore(settings.config.getint("Process", "MAX_CMS_CONCURRENT"))
 
     def _get_device_sem(self, reg_id):
         sem = self._per_device_sem.get(reg_id)
