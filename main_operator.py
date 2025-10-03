@@ -202,6 +202,8 @@ class Main:
                         data=enriched["report"], remote_folder_path=interest["cloud_folder"]
                     )
                     await self.process_and_upload_videos_async(reg_id, enriched)
+                else:
+                    logger.info(f"{reg_id}. Видео по интересу {interest_name} уже загружено на облако. Пропускаем...")
 
                 # Кадры до/после — оставляем как есть (пока без параллели каналов)
                 if settings.config.getboolean("General", "pics_before_after"):
@@ -281,29 +283,33 @@ class Main:
         logger.debug(f"Для скачивания определены кадры ДО - {before_channels_to_download}. "
                      f"После - {after_channels_to_download}")
 
+        frames_before = []
+        frames_after = []
         logger.debug("Получаем кадры ДО и ПОСЛЕ загрузки")
-        frames_before = await cms_api.get_frames(
-            jsession=self.jsession, reg_id=reg_id,
-            year=enriched["year"], month=enriched["month"],
-            day=enriched["day"],
-            start_sec=enriched["photo_before_sec"],
-            end_sec=enriched["photo_before_sec"] + 10,
-            channels=before_channels_to_download,
-        )
-        logger.debug(f"Кадры до: {frames_before}")
-        frames_after = await cms_api.get_frames(
-            jsession=self.jsession, reg_id=reg_id,
-            year=enriched["year"], month=enriched["month"],
-            day=enriched["day"],
-            start_sec=enriched["photo_after_sec"],
-            end_sec=enriched["photo_after_sec"] + 10,
-            channels = after_channels_to_download,
-        )
-        logger.debug(f"Фото до - {frames_before}. Фото после - {frames_after}")
-
-        quality_report = self.analyze_frames_quality(frames_before + frames_after)
-        logger.info(f"Анализ качества фото: {quality_report}")
-
+        if before_channels_to_download:
+            frames_before = await cms_api.get_frames(
+                jsession=self.jsession, reg_id=reg_id,
+                year=enriched["year"], month=enriched["month"],
+                day=enriched["day"],
+                start_sec=enriched["photo_before_sec"],
+                end_sec=enriched["photo_before_sec"] + 10,
+                channels=before_channels_to_download,
+            )
+            logger.debug(f"Кадры ДО: {frames_before}")
+        else:
+            logger.info(f"Все фото ДО по интересу {enriched['name']} уже загружены на облако")
+        if after_channels_to_download:
+            frames_after = await cms_api.get_frames(
+                jsession=self.jsession, reg_id=reg_id,
+                year=enriched["year"], month=enriched["month"],
+                day=enriched["day"],
+                start_sec=enriched["photo_after_sec"],
+                end_sec=enriched["photo_after_sec"] + 10,
+                channels = after_channels_to_download,
+            )
+            logger.debug(f"Фото после - {frames_after}")
+        else:
+            logger.info(f"Все фото ПОСЛЕ по интересу {enriched['name']} уже загружены на облако")
         upload_status = await asyncio.to_thread(
             cloud_uploader.create_pics,
             frames_before, frames_after, pics_after_folder, pics_before_folder
