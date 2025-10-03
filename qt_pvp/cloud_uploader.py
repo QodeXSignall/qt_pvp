@@ -271,7 +271,7 @@ def frame_exists_cloud(folder_path: str, channel_id: int) -> bool:
         for f in files:
             # webdav3 возвращает список путей, иногда включая саму папку
             filename = posixpath.basename(f)
-            if channel_id in filename:
+            if str(channel_id) in filename:
                 return True
         return False
     except Exception as e:
