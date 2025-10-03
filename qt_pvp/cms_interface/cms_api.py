@@ -450,12 +450,6 @@ async def download_video(
             f"(base=[{base_start}..{base_end}], Δ={delta})"
         )
 
-        async with _get_video_sem_for(reg_id):
-            response = await asyncio.to_thread(
-                get_video, jsession, reg_id, cur_start, cur_end,
-                year, month, day, channel_id
-            )
-
         for _ in range(2):  # до двух попыток на том же delta
             async with _get_video_sem_for(reg_id):
                 response = await asyncio.to_thread(
