@@ -232,6 +232,9 @@ class Main:
                 et = await coro
                 if et:
                     end_times.append(et)
+            except cms_api.DeviceOfflineError as err:
+                logger.debug("Устройство оффлайн, прерываем обработку интересов.")
+                return {"error": "Device offline error"}
             except Exception:
                 logger.error(f"{reg_id}: Ошибка в задаче интереса:\n{traceback.format_exc()}")
 
