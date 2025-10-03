@@ -4,6 +4,7 @@ from urllib.parse import quote
 from qt_pvp import settings
 import traceback
 import posixpath
+import asyncio
 import json
 import time
 import uuid
@@ -242,6 +243,11 @@ def interest_video_exists(interest_name: str) -> bool:
         logger.warning(f"Не удалось проверить наличие файла {interest_video_name}: {e}")
         return False
 
+
+async def _frame_exists_cloud_async(folder: str, channel_id: int) -> bool:
+    # webdav3 — синхронный; оборачиваем
+    return await asyncio.to_thread(frame_exists_cloud, folder, channel_id)
+
 def frame_exists_cloud(folder_path: str, channel_id: int) -> bool:
     """
     Проверяет, есть ли в папке файл, имя которого содержит заданную подстроку.
@@ -396,15 +402,15 @@ def upload_file(file_path, interest_folder_path):
     return success
 
 
-def create_pics(pics_before, pics_after, pics_before_forder, pics_after_forder):
+def create_pics(pics_before, pics_after, pics_before_folder, pics_after_folder):
+    ok_before = create_folder_if_not_exists(client, pics_before_folder)
+    ok_after  = create_folder_if_not_exists(client, pics_after_folder)
 
-    a = create_folder_if_not_exists(client, pics_after_forder)
-    b = create_folder_if_not_exists(client, pics_before_forder)
-    # Загружаем основной файл на сервер
-    if pics_before and a:
-        upload_pics(pics_before, pics_before_forder)
-    if pics_after and b:
-        upload_pics(pics_after, pics_after_forder)
+    if pics_before and ok_before:
+        upload_pics(pics_before, pics_before_folder)
+    if pics_after and ok_after:
+        upload_pics(pics_after, pics_after_folder)
+
 
 
 def upload_pics(pics, destinaton_folder):

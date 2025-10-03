@@ -37,5 +37,3 @@ cms_login = os.environ.get("cms_login")
 cms_password = os.environ.get("cms_password")
 TIME_FMT = "%Y-%m-%d %H:%M:%S"
 
-MAX_GLOBAL_INTERESTS = config.get("Process", "MAX_GLOBAL_INTERESTS")
-MAX_INTERESTS_PER_DEVICE = config.get("Process", "MAX_INTERESTS_PER_DEVICE")

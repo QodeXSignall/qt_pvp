@@ -1,5 +1,6 @@
 from qt_pvp.cms_interface import functions as cms_api_funcs
 from qt_pvp import functions as main_funcs
+from qt_pvp.cms_interface import cms_http
 from qt_pvp.cms_interface import cms_api
 from qt_pvp import cloud_uploader
 from qt_pvp.logger import logger
@@ -265,32 +266,35 @@ class Main:
         logger.info(
             f"{reg_id}. Пакет интересов завершён: {len(end_times)}/{len(interests)}; last_upload_time -> {new_last}")
 
-
-
     async def upload_frames_before_after(self, reg_id, enriched):
         interest_folder_path = enriched["cloud_folder"]
         pics_after_folder = posixpath.join(interest_folder_path, "after_pics")
         pics_before_folder = posixpath.join(interest_folder_path, "before_pics")
 
         channels = [0, 1, 2, 3]
-        before_channels_to_download = []
-        after_channels_to_download = []
-        for channel_id in channels:
-            if not cloud_uploader.frame_exists_cloud(pics_before_folder, channel_id):
-                before_channels_to_download.append(channel_id)
-            if not cloud_uploader.frame_exists_cloud(pics_after_folder, channel_id):
-                after_channels_to_download.append(channel_id)
+
+        # Параллельные проверки наличия на облаке
+        before_checks = [asyncio.create_task(cloud_uploader._frame_exists_cloud_async(pics_before_folder, ch)) for ch in channels]
+        after_checks = [asyncio.create_task(cloud_uploader._frame_exists_cloud_async(pics_after_folder, ch)) for ch in channels]
+
+        before_exists = await asyncio.gather(*before_checks)
+        after_exists = await asyncio.gather(*after_checks)
+
+        before_channels_to_download = [ch for ch, exists in zip(channels, before_exists) if not exists]
+        after_channels_to_download = [ch for ch, exists in zip(channels, after_exists) if not exists]
+
         logger.debug(f"Для скачивания определены кадры ДО - {before_channels_to_download}. "
                      f"После - {after_channels_to_download}")
 
-        frames_before = []
-        frames_after = []
+        frames_before: list[str] = []
+        frames_after: list[str] = []
+
         logger.debug("Получаем кадры ДО и ПОСЛЕ загрузки")
+
         if before_channels_to_download:
             frames_before = await cms_api.get_frames(
                 jsession=self.jsession, reg_id=reg_id,
-                year=enriched["year"], month=enriched["month"],
-                day=enriched["day"],
+                year=enriched["year"], month=enriched["month"], day=enriched["day"],
                 start_sec=enriched["photo_before_sec"],
                 end_sec=enriched["photo_before_sec"] + 10,
                 channels=before_channels_to_download,
@@ -298,24 +302,24 @@ class Main:
             logger.debug(f"Кадры ДО: {frames_before}")
         else:
             logger.info(f"Все фото ДО по интересу {enriched['name']} уже загружены на облако")
+
         if after_channels_to_download:
             frames_after = await cms_api.get_frames(
                 jsession=self.jsession, reg_id=reg_id,
-                year=enriched["year"], month=enriched["month"],
-                day=enriched["day"],
+                year=enriched["year"], month=enriched["month"], day=enriched["day"],
                 start_sec=enriched["photo_after_sec"],
                 end_sec=enriched["photo_after_sec"] + 10,
-                channels = after_channels_to_download,
+                channels=after_channels_to_download,
             )
-            logger.debug(f"Фото после - {frames_after}")
+            logger.debug(f"Фото ПОСЛЕ: {frames_after}")
         else:
             logger.info(f"Все фото ПОСЛЕ по интересу {enriched['name']} уже загружены на облако")
+
         upload_status = await asyncio.to_thread(
             cloud_uploader.create_pics,
-            frames_before, frames_after, pics_after_folder, pics_before_folder
+            frames_before, frames_after, pics_before_folder, pics_after_folder
         )
         return {"upload_status": upload_status, "frames_before": frames_before, "frames_after": frames_after}
-
 
     def analyze_frames_quality(self, frames: list):
         """
@@ -476,6 +480,7 @@ class Main:
                         logger.error("operate_device raised: %r", r)
 
             await asyncio.sleep(3)
+        cms_http.close_cms_async_client()
 
     def check_if_reg_online(self, reg_id):
         devices_online = self.get_devices_online()

@@ -1,4 +1,3 @@
-from _thread import allocate_lock
 from qt_pvp.logger import logger
 from qt_pvp import settings
 from qt_pvp.filelocker import FileLock, _load_states, _atomic_save_states, LOCK_PATH

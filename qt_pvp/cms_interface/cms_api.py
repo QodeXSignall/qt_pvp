@@ -1,16 +1,16 @@
 from qt_pvp.cms_interface import functions
 from requests.adapters import HTTPAdapter
+from qt_pvp.cms_interface import cms_http
+from qt_pvp.cms_interface import limits
 from urllib3.util.retry import Retry
 from qt_pvp.logger import logger
 from qt_pvp import settings
-from httpx import Timeout
 from typing import List
 import numpy as np
 import datetime
 import requests
 import aiohttp
 import asyncio
-import httpx
 import uuid
 import time
 import cv2
@@ -63,16 +63,11 @@ async def get_video(jsession, device_id: str, start_time_seconds: int,
         "jsession": jsession, "DownType": 2
     }
     url = f"{settings.cms_host}/StandardApiAction_getVideoFileInfo.action"
-    headers = {"User-Agent": "qt_pvp/1.0", "Connection": "close"}
 
-    limits = httpx.Limits(max_connections=10, max_keepalive_connections=5)
-    timeout = Timeout(60.0, connect=5.0)
-
-    async with httpx.AsyncClient(limits=limits, timeout=timeout) as client:
-        # ЕДИНСТВЕННЫЙ запрос; все ретраи — в декораторе
-        resp = await client.get(url, params=params, headers=headers)
-        return resp
-
+    async with limits.get_cms_global_sem():
+        async with limits.get_device_sem(device_id):
+            client = cms_http.get_cms_async_client()
+            return await client.get(url, params=params)
 
 
 
@@ -237,7 +232,8 @@ async def wait_and_get_dwn_url(jsession, download_task_url):
             return response_json["oldTaskAll"]["dph"]
         elif result == 32:
             logger.warning(f"Device is offline! {result}")
-            return {"error": "Device is offline!"}
+            raise DeviceOfflineError
+            #return {"error": "Device is offline!"}
         else:
             count += 1
             await asyncio.sleep(1)
@@ -288,39 +284,59 @@ async def get_frames(jsession, reg_id: str,
                      start_sec: int, end_sec: int,
                      channels: list = [0, 1, 2, 3]) -> List[str]:
     """
-    Для каждого канала пытаемся вытащить кадр.
-    Ретраи: фиксированный start_sec, растём только по end_sec -> end_sec + Δ.
+    Для каждого канала параллельно пытаемся вытащить кадр(ы).
+    Ограничиваем одновременное число каналов семафором.
     """
+    results: List[str] = []
 
+    async def guarded_channel(ch_id: int) -> List[str]:
+        #async with chan_sem:
+        return await _frames_for_channel(jsession, reg_id, ch_id, year, month, day, start_sec, end_sec)
+
+    tasks = [asyncio.create_task(guarded_channel(ch)) for ch in channels]
+    for t in asyncio.as_completed(tasks):
+        res = await t
+        if res:
+            results.extend(res)
+
+    return results
+
+async def _frames_for_channel(jsession, reg_id: str,
+                              channel_id: int,
+                              year: int, month: int, day: int,
+                              start_sec: int, end_sec: int) -> List[str]:
     frames: List[str] = []
+    videos_paths = await download_video(
+        jsession=jsession,
+        reg_id=reg_id,
+        channel_id=channel_id,
+        year=year, month=month, day=day,
+        start_sec=start_sec,
+        end_sec=end_sec,
+        adjustment_sequence=(0, 1, 2, 3, 4, 5),
+    )
 
-    for channel_id in channels:
-        videos_paths = await download_video(
-            jsession=jsession,
-            reg_id=reg_id,
-            channel_id=channel_id,
-            year=year, month=month, day=day,
-            start_sec=start_sec,
-            end_sec=end_sec,
-            adjustment_sequence=(0,1,2,3,4,5),
-        )
+    logger.debug(f"{reg_id}: Скачано видео для извлечения фото. ch={channel_id} -> files: {videos_paths}")
 
-        logger.debug(f"{reg_id}: Скачано видео для извлечения фото. ch={channel_id} -> files: {videos_paths}")
+    if not videos_paths:
+        await asyncio.sleep(0.2)
+        return frames
 
-        if not videos_paths:
-            await asyncio.sleep(0.2)
-            continue
-
-        # Извлекаем кадры из скачанных видео
-        for video_path in videos_paths:
-            try:
-                frame_path = await extract_first_frame(video_path, channel_id=channel_id)
-                if frame_path:
-                    frames.append(frame_path)
-            except Exception as ex:
-                logger.exception(f"{reg_id}: ch={channel_id} extract error: {ex}")
+    # Извлекаем параллельно, но под FRAME семафором внутри extract_first_frame
+    extract_tasks = [
+        asyncio.create_task(extract_first_frame(vp, channel_id=channel_id))
+        for vp in videos_paths
+    ]
+    for t in asyncio.as_completed(extract_tasks):
+        try:
+            fp = await t
+            if fp:
+                frames.append(fp)
+        except Exception as ex:
+            logger.exception(f"{reg_id}: ch={channel_id} extract error: {ex}")
 
     return frames
+
 
 
 
@@ -367,11 +383,9 @@ def _extract_first_frame_sync(video_path: str,
         return None
 
     os.makedirs(output_dir, exist_ok=True)
-
     filename = f"{channel_id}_{uuid.uuid4().hex}.jpg"
     output_path = os.path.join(output_dir, filename)
 
-    logger.debug(f"Пытаемся сохранить кадр в {output_path}")
     success, frame = cap.read()
     cap.release()
 
@@ -380,31 +394,21 @@ def _extract_first_frame_sync(video_path: str,
         if ok:
             logger.info(f"Кадр успешно сохранён в: {output_path}")
             return output_path
-        else:
-            logger.warning(f"cv2.imwrite вернул False: {output_path}")
-            return None
+        logger.warning(f"cv2.imwrite вернул False: {output_path}")
     else:
         logger.warning("Не удалось прочитать кадр из видео.")
-        return None
-
+    return None
 
 async def extract_first_frame(video_path: str,
                               output_dir: str = settings.FRAMES_TEMP_FOLDER,
                               max_retries: int = 3,
                               min_file_size_kb: int = 10,
                               channel_id: int = 0):
-    """
-    Асинхронная обёртка над синхронной функцией извлечения кадра.
-    Выполняется в thread-пуле, не блокирует event loop.
-    """
-    return await asyncio.to_thread(
-        _extract_first_frame_sync,
-        video_path,
-        output_dir,
-        max_retries,
-        min_file_size_kb,
-        channel_id
-    )
+    async with limits.get_frame_sem():
+        return await asyncio.to_thread(
+            _extract_first_frame_sync,
+            video_path, output_dir, max_retries, min_file_size_kb, channel_id
+        )
 
 def _create_placeholder_image(output_dir: str):
     """Создаёт заглушку — чёрное изображение с надписью NO IMAGE"""
