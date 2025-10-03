@@ -27,7 +27,7 @@ _GET_VIDEO_LOCKS = {}
 def _get_video_sem_for(dev_id: str) -> asyncio.Semaphore:
     sem = _GET_VIDEO_LOCKS.get(dev_id)
     if sem is None:
-        sem = asyncio.Semaphore(settings.config.getint("MAX_DOWNLOADS_PER_DEVICE"))
+        sem = asyncio.Semaphore(settings.config.getint("Process", "MAX_DOWNLOADS_PER_DEVICE"))
         _GET_VIDEO_LOCKS[dev_id] = sem
     return sem
 
