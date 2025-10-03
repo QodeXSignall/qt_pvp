@@ -14,6 +14,12 @@ import time
 import cv2
 import os
 
+
+class DeviceOfflineError(RuntimeError):
+    """CMS: устройство офлайн — нужно отложить обработку интереса и попробовать позже."""
+    pass
+
+
 # глобальный словарь семафоров по девайсам
 _GET_VIDEO_LOCKS = {}
 def _get_video_sem_for(dev_id: str) -> asyncio.Semaphore:
@@ -292,68 +298,39 @@ async def download_interest_videos(jsession, interest, chanel_id, reg_id,
 
 async def get_frames(jsession, reg_id: str,
                      year: int, month: int, day: int,
-                     start_sec: int, end_sec: int) -> List[str]:
+                     start_sec: int, end_sec: int,
+                     channels: list = [0, 1, 2, 3]) -> List[str]:
     """
     Для каждого канала пытаемся вытащить кадр.
     Ретраи: фиксированный start_sec, растём только по end_sec -> end_sec + Δ.
     """
-    channels = [0, 1, 2, 3]
+
     frames: List[str] = []
     # Только увеличиваем правую границу окна
-    FRAME_RETRY_DELTAS: Iterable[int] = (0, 4, 6, 8, 10, 20, 30, 40)
-    DAY_END = 24 * 60 * 60 - 1
     for channel_id in channels:
-        frame_got: Optional[str] = None
+        videos_paths = await download_video(
+            jsession=jsession,
+            reg_id=reg_id,
+            channel_id=channel_id,
+            year=year, month=month, day=day,
+            start_sec=start_sec,
+            end_sec=end_sec,
+            adjustment_sequence=(0,1,2,3,4,5),  # только текущее окно
+        )
 
-        for i, delta in enumerate(FRAME_RETRY_DELTAS, start=1):
-            cur_start = start_sec                         # НЕ меняем
-            cur_end   = min(DAY_END, end_sec + delta)     # УВЕЛИЧИВАЕМ только правую границу
+        logger.debug(f"{reg_id}: Скачано видео для извлечения фото. ch={channel_id} -> files: {videos_paths}")
 
-            logger.debug(
-                f"{reg_id}: ch={channel_id} retry {i}/{len(tuple(FRAME_RETRY_DELTAS))} "
-                f"Δ={delta} -> window=[{cur_start}..{cur_end}]"
-            )
+        if not videos_paths:
+            await asyncio.sleep(0.2)
+            continue
 
-            # Скачиваем ровно это окно без внутренних авто-расширений
-            videos_paths = await download_video(
-                jsession=jsession,
-                reg_id=reg_id,
-                channel_id=channel_id,
-                year=year, month=month, day=day,
-                start_sec=cur_start,
-                end_sec=cur_end,
-                adjustment_sequence=(0,),  # только текущее окно
-            )
-
-            logger.debug(f"{reg_id}: ch={channel_id}, Δ={delta} -> files: {videos_paths}")
-
-            if not videos_paths:
-                await asyncio.sleep(0.2)
-                continue
-
-            # Пробуем кадр из любого файла
-            for video_path in videos_paths:
-                try:
-                    frame_path = await asyncio.to_thread(extract_first_frame, video_path)
-                except Exception as ex:
-                    logger.exception(f"{reg_id}: ch={channel_id} extract error: {ex}")
-                    frame_path = None
-
-                if frame_path:
-                    frame_got = frame_path
-                    logger.debug(f"{reg_id}: ch={channel_id}, Δ={delta} -> frame: {frame_path}")
-                    break
-
-            if frame_got:
-                break  # по каналу успех — выходим из ретраев
-
-            await asyncio.sleep(0.2)  # чуть щадим CMS
-
-        if frame_got:
-            frames.append(frame_got)
-        else:
-            logger.error(f"{reg_id}: ch={channel_id} — кадр не получен после всех Δ")
-
+        # Извлекаем кадры из скачанных видео
+        for video_path in videos_paths:
+            try:
+                frame_path = await asyncio.to_thread(extract_first_frame, video_path, channel_id=channel_id)
+                frames.append(frame_path)
+            except Exception as ex:
+                logger.exception(f"{reg_id}: ch={channel_id} extract error: {ex}")
     return frames
 
 
@@ -382,12 +359,12 @@ def extract_first_frame(video_path: str,
                         output_dir: str = settings.FRAMES_TEMP_FOLDER,
                         max_retries: int = 3,
                         min_file_size_kb: int = 10,
-                        allow_placeholder: bool = True):
+                        channel_id: int = 0):
     if not os.path.exists(video_path) or (
             os.path.getsize(video_path) / 1024) < min_file_size_kb:
         logger.error(f"Файл слишком маленький или не найден: {video_path}")
-        log_no_image_event(reg_id="dummy", frame_path=video_path,
-                           context="photo_before_after")
+        #log_no_image_event(reg_id="dummy", frame_path=video_path,
+        #                   context="photo_before_after")
         return
 
     cap = None
@@ -406,7 +383,7 @@ def extract_first_frame(video_path: str,
 
     os.makedirs(output_dir, exist_ok=True)
 
-    filename = f"{uuid.uuid4().hex}.jpg"
+    filename = f"{channel_id}_{uuid.uuid4().hex}.jpg"
     output_path = os.path.join(output_dir, filename)
 
     logger.debug(f"Пытаемся сохранить кадр в {output_path}")
@@ -453,8 +430,6 @@ async def download_video(
     day: int,
     start_sec: int,
     end_sec: int,
-    # последовательность расширений в секундах относительно базы:
-    # напр. [0, 15, 30, 45]
     adjustment_sequence: Iterable[int] = (0, 30, 60, 90),
 ):
     start_limit, end_limit = 0, 24*60*60 - 1
@@ -503,12 +478,10 @@ async def download_video(
 
         logger.debug(f"{reg_id}: get_video result={result}, msg={message!r}, files={len(files)}")
 
+
         if result == 32 and "Device is not online" in message:
             logger.warning(f"{reg_id}: устройство офлайн. Ждём 5с и пробуем снова (та же попытка).")
-            await asyncio.sleep(5)
-            # повторяем ту же попытку — делаем ещё одну итерацию с тем же delta
-            # См. комментарий выше: для строгого повторения нужен while; для простоты — continue, что двинет нас к след. delta.
-            continue
+            raise DeviceOfflineError(message or "Device is not online!")
 
         if files:
             for f in files:

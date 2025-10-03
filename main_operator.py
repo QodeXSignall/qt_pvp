@@ -4,9 +4,10 @@ from qt_pvp.cms_interface import cms_api
 from qt_pvp import cloud_uploader
 from qt_pvp.logger import logger
 from qt_pvp import settings
-import asyncio
+import posixpath
 import traceback
 import datetime
+import asyncio
 import shutil
 import os
 
@@ -110,22 +111,16 @@ class Main:
         logger.debug(f"Начинаем работу с устройством {reg_id}")
         begin_time = datetime.datetime.now()
 
-        # Проверка доступности регистратора
-        #if not self.check_if_reg_online(reg_id):
-        #    logger.info(f"{reg_id} недоступен.")
-        #    return
-
         # Информация о регистраторе
         reg_info = main_funcs.get_reg_info(reg_id) or main_funcs.create_new_reg(reg_id, plate)
         logger.debug(f"Информация о регистраторе {reg_id} - {reg_info}")
-        #if not reg_info:
-        #    main_funcs.create_new_reg(reg_id)
         chanel_id = reg_info.get("chanel_id", 0)  # Если нет ID канала, ставим 0
 
         ignore = reg_info.get("ignore", False)
         if ignore:
             logger.debug(f"Игнорируем регистратор {reg_id}")
             return
+
         # Временные границы окна
         TIME_FMT = "%Y-%m-%d %H:%M:%S"
         start_time = start_time or main_funcs.get_reg_last_upload_time(reg_id)
@@ -173,21 +168,11 @@ class Main:
         interests = main_funcs.filter_already_processed(reg_id, interests)
         logger.info(f"{reg_id}: К запуску {len(interests)} интересов (после фильтра processed).")
 
-        # Единая стратегия расширения окна — теперь задаём здесь,
-        # а применяет её download_video (через download_interest_videos).
-        adjustment_sequence = (0, 15, 30, 45)
-
         async def _process_one_interest(interest: dict) -> str | None:
             # ограничители: глобально и на устройство
             async with self._global_interests_sem, self._get_device_sem(reg_id):
                 created_start_time = datetime.datetime.now()
                 interest_name = interest["name"]
-
-                # Дедуп по облаку (быстрый выход)
-                #if cloud_uploader.interest_folder_exists(interest_name, settings.CLOUD_PATH):
-                #    logger.info(f"[DEDUP] В облаке уже есть папка интереса {interest_name} — пропускаем.")
-                #    main_funcs._save_processed(reg_id, interest_name)
-                #    return interest["end_time"]  # вернём конец интереса для будущего max()
 
                 # Создаём пути в облаке под интерес
                 cloud_paths = cloud_uploader.create_interest_folder_path(
@@ -198,23 +183,23 @@ class Main:
                     logger.error(f"{reg_id}: Не удалось создать папки для {interest_name}. Пропускаем интерес.")
                     return interest["end_time"]
 
-                interest_cloud_folder = cloud_paths["interest_folder_path"]
+                if not cloud_uploader.interest_video_exists(interest_name):
+                    interest_cloud_folder = cloud_paths["interest_folder_path"]
 
-                logger.debug(f"{reg_id}: Начинаем скачивание видео для {interest_name}")
-                enriched = await cms_api.download_interest_videos(
-                    self.jsession, interest, chanel_id, reg_id=reg_id,
-                    adjustment_sequence=adjustment_sequence,
-                )  # вернёт interest с file_paths, либо None :contentReference[oaicite:3]{index=3}
+                    logger.debug(f"{reg_id}: Начинаем скачивание видео для {interest_name}")
+                    enriched = await cms_api.download_interest_videos(
+                        self.jsession, interest, chanel_id, reg_id=reg_id,
+                        adjustment_sequence=(0, 15, 30, 45),
+                    )  # вернёт interest с file_paths, либо None
 
-                if not enriched:
-                    logger.warning(f"{reg_id}: Не удалось получить видеофайлы для {interest_name}")
-                    # Важно: всё равно вернём end_time, чтобы батч мог продвинуть last_upload_time вперёд
-                    return interest["end_time"]
+                    if not enriched:
+                        logger.warning(f"{reg_id}: Не удалось получить видеофайлы для {interest_name}")
+                        # Важно: всё равно вернём end_time, чтобы батч мог продвинуть last_upload_time вперёд
+                        return interest["end_time"]
 
-                enriched["cloud_folder"] = interest_cloud_folder
+                    enriched["cloud_folder"] = interest_cloud_folder
 
-                # Обработка и загрузка видео (как у тебя сейчас)
-                await self.process_and_upload_videos_async(reg_id, enriched)
+                    await self.process_and_upload_videos_async(reg_id, enriched)
 
                 # Кадры до/после — оставляем как есть (пока без параллели каналов)
                 if settings.config.getboolean("General", "pics_before_after"):
@@ -235,7 +220,7 @@ class Main:
                 )
 
                 # Маркируем интерес как обработанный (локально)
-                main_funcs._save_processed(reg_id, interest_name)
+                #main_funcs._save_processed(reg_id, interest_name)
 
                 return interest["end_time"]
 
@@ -256,9 +241,10 @@ class Main:
         # либо (если все упали/ничего не пришло) — концом окна end_time
         if end_times:
             new_last = max(end_times)
-        else:
-            new_last = end_time  # конец окна, чтобы не зациклиться на том же диапазоне
-        main_funcs.save_new_reg_last_upload_time(reg_id, new_last)
+            main_funcs.save_new_reg_last_upload_time(reg_id, new_last)
+        #else:
+        #    new_last = end_time  # конец окна, чтобы не зациклиться на том же диапазоне
+        #main_funcs.save_new_reg_last_upload_time(reg_id, new_last)
 
         logger.info(
             f"{reg_id}. Пакет интересов завершён: {len(end_times)}/{len(interests)}; last_upload_time -> {new_last}")
@@ -266,13 +252,29 @@ class Main:
 
 
     async def upload_frames_before_after(self, reg_id, enriched):
+        interest_folder_path = enriched["cloud_folder"]
+        pics_after_folder = posixpath.join(interest_folder_path, "after_pics")
+        pics_before_folder = posixpath.join(interest_folder_path, "before_pics")
+
+        channels = [0, 1, 2, 3]
+        before_channels_to_download = []
+        after_channels_to_download = []
+        for channel_id in channels:
+            if not cloud_uploader.frame_exists_cloud(pics_before_folder, channel_id):
+                before_channels_to_download.append(channel_id)
+            if not cloud_uploader.frame_exists_cloud(pics_after_folder, channel_id):
+                after_channels_to_download.append(channel_id)
+        logger.debug(f"Для скачивания определены кадры ДО - {before_channels_to_download}. "
+                     f"После - {after_channels_to_download}")
+
         logger.debug("Получаем кадры ДО и ПОСЛЕ загрузки")
         frames_before = await cms_api.get_frames(
             jsession=self.jsession, reg_id=reg_id,
             year=enriched["year"], month=enriched["month"],
             day=enriched["day"],
             start_sec=enriched["photo_before_sec"],
-            end_sec=enriched["photo_before_sec"] + 10
+            end_sec=enriched["photo_before_sec"] + 10,
+            channels=before_channels_to_download,
         )
         logger.debug(f"Кадры до: {frames_before}")
         frames_after = await cms_api.get_frames(
@@ -280,7 +282,8 @@ class Main:
             year=enriched["year"], month=enriched["month"],
             day=enriched["day"],
             start_sec=enriched["photo_after_sec"],
-            end_sec=enriched["photo_after_sec"] + 10
+            end_sec=enriched["photo_after_sec"] + 10,
+            channels = after_channels_to_download,
         )
         logger.debug(f"Фото до - {frames_before}. Фото после - {frames_after}")
 
@@ -288,8 +291,8 @@ class Main:
         logger.info(f"Анализ качества фото: {quality_report}")
 
         upload_status = await asyncio.to_thread(
-            cloud_uploader.create_pics, enriched["cloud_folder"],
-            frames_before, frames_after
+            cloud_uploader.create_pics,
+            frames_before, frames_after, pics_after_folder, pics_before_folder
         )
         return {"upload_status": upload_status, "frames_before": frames_before, "frames_after": frames_after}
 

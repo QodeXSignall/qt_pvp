@@ -222,14 +222,53 @@ def parse_filename(filename):
     return reg_id, date_str
 
 # qt_pvp/cloud_uploader.py
-def interest_folder_exists(interest_name: str, dest_directory: str) -> bool:
+
+
+def get_interest_video_cloud_path(interest_name, dest_directory=settings.CLOUD_PATH):
     registr_folder, date_folder_path, interest_folder_path = get_interest_folder_path(interest_name, dest_directory)
+    interest_video_name = posixpath.join(interest_folder_path, f"{interest_name}.mp4")
+    return interest_video_name
+
+
+def interest_video_exists(interest_name: str) -> bool:
+    interest_video_name = get_interest_video_cloud_path(interest_name, dest_directory=settings.CLOUD_PATH)
     try:
-        return client.check(interest_folder_path)
+        return client.check(interest_video_name)
     except Exception as e:
-        logger.warning(f"Не удалось проверить наличие папки {interest_folder_path}: {e}")
+        logger.warning(f"Не удалось проверить наличие файла {interest_video_name}: {e}")
         return False
 
+def frame_exists_cloud(folder_path: str, channel_id: int) -> bool:
+    """
+    Проверяет, есть ли в папке файл, имя которого содержит заданную подстроку.
+
+    :param folder_path: путь до папки в облаке (WebDAV)
+    :param channel_id: подстрока, которую ищем в названии файла
+    :return: True если файл найден, False если нет или произошла ошибка
+    """
+    try:
+        # Получаем список содержимого папки
+        files = client.list(folder_path)
+
+        # Проверяем каждый элемент
+        for f in files:
+            # webdav3 возвращает список путей, иногда включая саму папку
+            filename = posixpath.basename(f)
+            if channel_id in filename:
+                return True
+        return False
+    except Exception as e:
+        logger.warning(f"Не удалось проверить наличие файлов в {folder_path}: {e}")
+        return False
+
+
+def frame_exists(interest_name: str) -> bool:
+    interest_video_name = get_interest_video_cloud_path(interest_name, dest_directory=settings.CLOUD_PATH)
+    try:
+        return client.check(interest_video_name)
+    except Exception as e:
+        logger.warning(f"Не удалось проверить наличие файла {interest_video_name}: {e}")
+        return False
 
 def create_folder_if_not_exists(client, folder_path):
     """
@@ -340,17 +379,15 @@ def upload_file(file_path, interest_folder_path):
     return success
 
 
-def create_pics(interest_folder_path, pics_before, pics_after):
-    after_pics_folder = posixpath.join(interest_folder_path, "after_pics")
-    before_pics_folder = posixpath.join(interest_folder_path, "before_pics")
+def create_pics(pics_before, pics_after, pics_before_forder, pics_after_forder):
 
-    a = create_folder_if_not_exists(client, after_pics_folder)
-    b = create_folder_if_not_exists(client, before_pics_folder)
+    a = create_folder_if_not_exists(client, pics_after_forder)
+    b = create_folder_if_not_exists(client, pics_before_forder)
     # Загружаем основной файл на сервер
     if pics_before and a:
-        upload_pics(pics_before, before_pics_folder)
+        upload_pics(pics_before, pics_before_forder)
     if pics_after and b:
-        upload_pics(pics_after, after_pics_folder)
+        upload_pics(pics_after, pics_after_forder)
 
 
 def upload_pics(pics, destinaton_folder):
