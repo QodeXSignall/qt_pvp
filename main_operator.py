@@ -183,6 +183,7 @@ class Main:
                     logger.error(f"{reg_id}: Не удалось создать папки для {interest_name}. Пропускаем интерес.")
                     return interest["end_time"]
                 interest_cloud_folder = cloud_paths["interest_folder_path"]
+                interest["cloud_folder"] = interest_cloud_folder
 
                 if not cloud_uploader.interest_video_exists(interest_name):
                     logger.debug(f"{reg_id}: Начинаем скачивание видео для {interest_name}")
@@ -196,7 +197,6 @@ class Main:
                         # Важно: всё равно вернём end_time, чтобы батч мог продвинуть last_upload_time вперёд
                         return interest["end_time"]
 
-                    enriched["cloud_folder"] = interest_cloud_folder
 
                     cloud_uploader.upload_dict_as_json_to_cloud(
                         data=enriched["report"], remote_folder_path=interest["cloud_folder"]
@@ -239,11 +239,10 @@ class Main:
         # либо (если все упали/ничего не пришло) — концом окна end_time
         if end_times:
             new_last = max(end_times)
-            main_funcs.save_new_reg_last_upload_time(reg_id, new_last)
-        #else:
-        #    new_last = end_time  # конец окна, чтобы не зациклиться на том же диапазоне
+        else:
+            new_last = start_time  # конец окна?, чтобы не зациклиться на том же диапазоне
         #main_funcs.save_new_reg_last_upload_time(reg_id, new_last)
-
+        main_funcs.save_new_reg_last_upload_time(reg_id, new_last)
         logger.info(
             f"{reg_id}. Пакет интересов завершён: {len(end_times)}/{len(interests)}; last_upload_time -> {new_last}")
 
