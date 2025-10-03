@@ -227,16 +227,30 @@ class Main:
 
         # Собираем результаты по мере готовности
         end_times: list[str] = []
-        for coro in asyncio.as_completed(tasks):
-            try:
-                et = await coro
-                if et:
-                    end_times.append(et)
-            except cms_api.DeviceOfflineError as err:
-                logger.debug("Устройство оффлайн, прерываем обработку интересов.")
-                return {"error": "Device offline error"}
-            except Exception:
-                logger.error(f"{reg_id}: Ошибка в задаче интереса:\n{traceback.format_exc()}")
+        try:
+            for coro in asyncio.as_completed(tasks):
+                try:
+                    et = await coro
+                    if et:
+                        end_times.append(et)
+                except cms_api.DeviceOfflineError as err:
+                    logger.debug("Устройство оффлайн, прерываем обработку интересов.")
+
+                    # отменяем все остальные задачи
+                    for t in tasks:
+                        t.cancel()
+
+                    # ждём, пока они корректно завершатся (с подавлением CancelledError)
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                    logger.error(f"{reg_id}. Обработка регистратора завершена.")
+                    return {"error": "Device offline error"}
+                except Exception:
+                    logger.error(f"{reg_id}: Ошибка в задаче интереса:\n{traceback.format_exc()}")
+        finally:
+            # на всякий случай — чтобы не остались висячие задачи
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
 
         # Обновляем last_upload_time ОДИН раз — максимумом из завершённых интересов,
         # либо (если все упали/ничего не пришло) — концом окна end_time
