@@ -199,19 +199,18 @@ class Main:
 
                     enriched["cloud_folder"] = interest_cloud_folder
 
+                    cloud_uploader.upload_dict_as_json_to_cloud(
+                        data=enriched["report"], remote_folder_path=interest["cloud_folder"]
+                    )
                     await self.process_and_upload_videos_async(reg_id, enriched)
 
                 # Кадры до/после — оставляем как есть (пока без параллели каналов)
                 if settings.config.getboolean("General", "pics_before_after"):
-                    upload_status = await self.upload_frames_before_after(reg_id, enriched)
+                    upload_status = await self.upload_frames_before_after(reg_id, interest)
                     if upload_status["upload_status"]:
                         for frame in upload_status["frames_before"] + upload_status["frames_after"]:
                             logger.info(f"{reg_id}: Загрузка фото ок. Удаляем локальный файл {frame}.")
 
-                # Отчёты
-                cloud_uploader.upload_dict_as_json_to_cloud(
-                    data=enriched["report"], remote_folder_path=enriched["cloud_folder"]
-                )
                 cloud_uploader.append_report_line_to_cloud(
                     remote_folder_path=cloud_paths["date_folder_path"],
                     created_start_time=created_start_time.strftime(self.TIME_FMT),

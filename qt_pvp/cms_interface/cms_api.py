@@ -480,7 +480,7 @@ async def download_video(
 
 
         if result == 32 and "Device is not online" in message:
-            logger.warning(f"{reg_id}: устройство офлайн. Ждём 5с и пробуем снова (та же попытка).")
+            logger.warning(f"{reg_id}: устройство офлайн")
             raise DeviceOfflineError(message or "Device is not online!")
 
         if files:
