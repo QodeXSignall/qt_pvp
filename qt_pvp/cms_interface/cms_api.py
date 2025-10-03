@@ -293,7 +293,7 @@ async def get_frames(jsession, reg_id: str,
     """
 
     frames: List[str] = []
-    # Только увеличиваем правую границу окна
+
     for channel_id in channels:
         videos_paths = await download_video(
             jsession=jsession,
@@ -302,7 +302,7 @@ async def get_frames(jsession, reg_id: str,
             year=year, month=month, day=day,
             start_sec=start_sec,
             end_sec=end_sec,
-            adjustment_sequence=(0,1,2,3,4,5),  # только текущее окно
+            adjustment_sequence=(0,1,2,3,4,5),
         )
 
         logger.debug(f"{reg_id}: Скачано видео для извлечения фото. ch={channel_id} -> files: {videos_paths}")
@@ -314,11 +314,13 @@ async def get_frames(jsession, reg_id: str,
         # Извлекаем кадры из скачанных видео
         for video_path in videos_paths:
             try:
-                frame_path = await asyncio.to_thread(extract_first_frame, video_path, channel_id=channel_id)
-                frames.append(frame_path)
+                frame_path = await extract_first_frame(video_path, channel_id=channel_id)
+                if frame_path:
+                    frames.append(frame_path)
             except Exception as ex:
                 logger.exception(f"{reg_id}: ch={channel_id} extract error: {ex}")
-    return frames
+
+        return frames
 
 
 
@@ -342,31 +344,27 @@ def log_no_image_event(reg_id: str, frame_path: str, context: str = "unknown"):
     logger.info(f"NO IMAGE событие залогировано: {log_line.strip()}")
 
 
-def extract_first_frame(video_path: str,
-                        output_dir: str = settings.FRAMES_TEMP_FOLDER,
-                        max_retries: int = 3,
-                        min_file_size_kb: int = 10,
-                        channel_id: int = 0):
-    if not os.path.exists(video_path) or (
-            os.path.getsize(video_path) / 1024) < min_file_size_kb:
+
+def _extract_first_frame_sync(video_path: str,
+                              output_dir: str = settings.FRAMES_TEMP_FOLDER,
+                              max_retries: int = 3,
+                              min_file_size_kb: int = 10,
+                              channel_id: int = 0):
+    if not os.path.exists(video_path) or (os.path.getsize(video_path) / 1024) < min_file_size_kb:
         logger.error(f"Файл слишком маленький или не найден: {video_path}")
-        #log_no_image_event(reg_id="dummy", frame_path=video_path,
-        #                   context="photo_before_after")
-        return
+        return None
 
     cap = None
     for attempt in range(max_retries):
         cap = cv2.VideoCapture(video_path)
         if cap.isOpened():
             break
-        logger.warning(
-            f"Попытка {attempt + 1}: Не удалось открыть видео: {video_path}")
+        logger.warning(f"Попытка {attempt + 1}: Не удалось открыть видео: {video_path}")
         time.sleep(1)
 
     if not cap or not cap.isOpened():
-        logger.error(
-            f"Не удалось открыть видео после {max_retries} попыток: {video_path}")
-        return
+        logger.error(f"Не удалось открыть видео после {max_retries} попыток: {video_path}")
+        return None
 
     os.makedirs(output_dir, exist_ok=True)
 
@@ -378,13 +376,35 @@ def extract_first_frame(video_path: str,
     cap.release()
 
     if success and frame is not None:
-        cv2.imwrite(output_path, frame)
-        logger.info(f"Кадр успешно сохранён в: {output_path}")
-        return output_path
+        ok = cv2.imwrite(output_path, frame)
+        if ok:
+            logger.info(f"Кадр успешно сохранён в: {output_path}")
+            return output_path
+        else:
+            logger.warning(f"cv2.imwrite вернул False: {output_path}")
+            return None
     else:
         logger.warning("Не удалось прочитать кадр из видео.")
-        return
+        return None
 
+
+async def extract_first_frame(video_path: str,
+                              output_dir: str = settings.FRAMES_TEMP_FOLDER,
+                              max_retries: int = 3,
+                              min_file_size_kb: int = 10,
+                              channel_id: int = 0):
+    """
+    Асинхронная обёртка над синхронной функцией извлечения кадра.
+    Выполняется в thread-пуле, не блокирует event loop.
+    """
+    return await asyncio.to_thread(
+        _extract_first_frame_sync,
+        video_path,
+        output_dir,
+        max_retries,
+        min_file_size_kb,
+        channel_id
+    )
 
 def _create_placeholder_image(output_dir: str):
     """Создаёт заглушку — чёрное изображение с надписью NO IMAGE"""
