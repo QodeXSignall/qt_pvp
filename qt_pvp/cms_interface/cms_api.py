@@ -50,7 +50,7 @@ def login():
     return data
 
 
-@functions.cms_data_get_decorator()  # см. пункт 3 про декоратор
+@functions.cms_data_get_decorator(tag="get_video")
 async def get_video(jsession, device_id: str, start_time_seconds: int,
                     end_time_seconds: int, year: int, month: int, day: int,
                     channel_id: int = 0, fileattr: int = 2):
@@ -63,35 +63,15 @@ async def get_video(jsession, device_id: str, start_time_seconds: int,
         "jsession": jsession, "DownType": 2
     }
     url = f"{settings.cms_host}/StandardApiAction_getVideoFileInfo.action"
-    headers = {
-        "User-Agent": "qt_pvp/1.0",
-        "Connection": "close",
-    }
-    logger.debug(f"Getting request {url}. \nParams: {params}")
+    headers = {"User-Agent": "qt_pvp/1.0", "Connection": "close"}
 
     limits = httpx.Limits(max_connections=10, max_keepalive_connections=5)
     timeout = Timeout(60.0, connect=5.0)
 
     async with httpx.AsyncClient(limits=limits, timeout=timeout) as client:
-        retries = 3
-        backoff = 0.6
-        last_exc = None
-        for attempt in range(1, retries + 1):
-            try:
-                resp = await client.get(url, params=params, headers=headers)
-                if resp.status_code in (502, 503, 504):
-                    raise httpx.HTTPStatusError(
-                        f"Bad status {resp.status_code}", request=resp.request, response=resp
-                    )
-                return resp  # httpx.Response; .json() синхронный
-            except (httpx.RequestError, httpx.HTTPStatusError) as e:
-                last_exc = e
-                logger.warning(f"[Attempt {attempt}/{retries}] Ошибка при запросе: {e}")
-                if attempt < retries:
-                    await asyncio.sleep(backoff * attempt)
-                else:
-                    raise
-        raise last_exc if last_exc else RuntimeError("Неизвестная ошибка при get_video")
+        # ЕДИНСТВЕННЫЙ запрос; все ретраи — в декораторе
+        resp = await client.get(url, params=params, headers=headers)
+        return resp
 
 
 
