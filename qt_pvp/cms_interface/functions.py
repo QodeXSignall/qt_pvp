@@ -555,6 +555,7 @@ def find_interests_by_lifting_switches(
 
         track = tracks[i]
         next_track = tracks[i+1]
+        cur_speed = track.get("sp")
 
         # --- вычисление разрыва между текущим треком и следующим ---
         t_curr = datetime.datetime.strptime(track["gt"], "%Y-%m-%d %H:%M:%S")
@@ -565,7 +566,8 @@ def find_interests_by_lifting_switches(
 
         if gap_sec > GAP_THRESHOLD:
             logger.debug(f"gap: {t_curr} → {t_next} = {gap_sec:.1f}s")
-            logger.debug(f"[TRACE] gt={track.get('gt')} sp={track.get('sp')}")
+            logger.debug(f"[TRACE] gt={track.get('gt')} sp={cur_speed}")
+
         # === Новая вставка: обработка "разрыва" через алармы (если они переданы и подготовлены) ===
         if alarms and isinstance(alarms, dict) and "alarms" in alarms and "starts" in alarms and gap_sec > GAP_THRESHOLD:
             gap_start_ts = t_curr.timestamp()
@@ -1077,7 +1079,8 @@ def find_first_stable_stop(
     logger.debug("Ищем движение и остановку до первого срабатывания концевика")
 
     cutoff_time = current_dt - datetime.timedelta(
-        seconds=settings.config.getint("Interests", "MAX_LOOKBACK_SECONDS"))
+        seconds=settings.config.getint("Interests", "MAX_LOOKBACK_SECONDS")
+    )
     min_stop_speed = settings.config.getint("Interests", "MIN_STOP_SPEED")
     min_stop_duration_sec = settings.config.getint("Interests", "MIN_STOP_DURATION_SEC")
 
@@ -1087,6 +1090,24 @@ def find_first_stable_stop(
 
     def ts(idx: int) -> datetime.datetime:
         return datetime.datetime.strptime(tracks[idx]["gt"], "%Y-%m-%d %H:%M:%S")
+
+    # --- РАННЯЯ ПРОВЕРКА ШУМА (мягкая) ---
+    # Шумом считаем только если есть РОВНО 5 подряд точек (j, j-1, ..., j-4),
+    # и у всех скорость > min_stop_speed. Если точек меньше 5 — не помечаем как шум.
+    if start_index >= 4:
+        all_fast = True
+        for k in range(start_index, start_index - 5, -1):
+            spd_k = int(tracks[k].get("sp") or 0)
+            if spd_k <= min_stop_speed:
+                all_fast = False
+                break
+        if all_fast:
+            logger.debug(
+                f"[ШУМ] В первых 5 точках после срабатывания все скорости > {min_stop_speed}. "
+                f"Считаем срабатывание шумом и возвращаем None."
+            )
+            return None
+    # --- конец мягкой проверки ---
 
     while j >= 0:
         point_time = ts(j)
@@ -1141,6 +1162,7 @@ def find_first_stable_stop(
 
     logger.warning("[ОСТАНОВКА НЕ НАЙДЕНА]")
     return None
+
 
 
 def find_first_stable_stop_depr(tracks, start_index, current_dt, settings):
