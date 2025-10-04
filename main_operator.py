@@ -40,6 +40,8 @@ class Main:
         devices_online = devices_online.json()["onlines"]
         if devices_online:
             logger.info(f"Got devices online: {devices_online}")
+        else:
+            logger.debug("No devices online (empty 'onlines').")
         return devices_online
 
     async def operate_device(self, reg_id, plate):
@@ -491,8 +493,4 @@ class Main:
 
 if __name__ == "__main__":
     d = Main()
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(d.mainloop())
-    # b = d.trace_reg_state("104039")
-    # 118270348452
-    # 2024050601
+    asyncio.run(d.mainloop())
