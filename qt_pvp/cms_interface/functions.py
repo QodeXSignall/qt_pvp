@@ -1094,16 +1094,19 @@ def find_first_stable_stop(
     # --- РАННЯЯ ПРОВЕРКА ШУМА (мягкая) ---
     # Шумом считаем только если есть РОВНО 5 подряд точек (j, j-1, ..., j-4),
     # и у всех скорость > min_stop_speed. Если точек меньше 5 — не помечаем как шум.
+    logger.debug("Проверка остановки до концевика. Start_index - ", start_index)
     if start_index >= 4:
-        all_fast = True
+        stops = 0
+        logger.debug("Проверяем 5 последних треков")
         for k in range(start_index, start_index - 5, -1):
             spd_k = int(tracks[k].get("sp") or 0)
+            logger.debug(f"Скорость {spd_k}. Index - {k}")
             if spd_k <= min_stop_speed:
-                all_fast = False
-                break
-        if all_fast:
+                stops += 1
+                logger.debug("Обнаружена остановка, считаем, что концевик сработал во время остановки")
+        if stops < 2:
             logger.debug(
-                f"[ШУМ] В первых 5 точках после срабатывания все скорости > {min_stop_speed}. "
+                f"[ШУМ] В первых 5 точках после срабатывания 3 скорости > {min_stop_speed}. "
                 f"Считаем срабатывание шумом и возвращаем None."
             )
             return None
