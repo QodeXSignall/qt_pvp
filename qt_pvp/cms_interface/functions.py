@@ -1091,6 +1091,7 @@ def find_first_stable_stop(
     def ts(idx: int) -> datetime.datetime:
         return datetime.datetime.strptime(tracks[idx]["gt"], "%Y-%m-%d %H:%M:%S")
 
+    '''
     # --- РАННЯЯ ПРОВЕРКА ШУМА (мягкая) ---
     # Шумом считаем только если есть РОВНО 5 подряд точек (j, j-1, ..., j-4),
     # и у всех скорость > min_stop_speed. Если точек меньше 5 — не помечаем как шум.
@@ -1111,11 +1112,11 @@ def find_first_stable_stop(
             )
             return None
     # --- конец мягкой проверки ---
+    '''
 
     while j >= 0:
         point_time = ts(j)
         spd = int(tracks[j].get("sp") or 0)
-
         logger.debug(
             f"[СКАНИРОВАНИЕ] j={j}, время={point_time}, скорость={spd}, "
             f"серия={None if stop_start_idx is None else (stop_start_idx, stop_end_idx)}"
