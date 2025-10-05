@@ -1453,17 +1453,43 @@ except Exception:
 
 def cms_data_get_decorator(tag: str = "execute func"):
     """
-    Универсальный декоратор: поддерживает и sync, и async функции.
-    Повторяет запрос при:
-      - HTTP status != 200
-      - ошибке парсинга JSON
-      - data.get("result") == 24 (устройства «заняты»)
-      - сетевых ошибках httpx/requests
-    Экспоненциальный backoff: старт 1.0с, множитель 1.5, максимум 10.0с
+    ...
     """
+    def _exc_details(err):
+        # имя класса и repr
+        cls = type(err).__name__
+        base = f"{cls}: {repr(err)}"
+        # request/response если есть (и у requests, и у httpx это есть)
+        try:
+            req = getattr(err, "request", None)
+            resp = getattr(err, "response", None)
+            parts = [base]
+            if req is not None:
+                method = getattr(req, "method", None) or getattr(req, "method", "")
+                url = getattr(getattr(req, "url", None), "human_repr", None)
+                if callable(url): url = req.url.human_repr()  # httpx.URL
+                if url is None: url = getattr(req, "url", "")
+                parts.append(f"request={method} {url}")
+            if resp is not None:
+                sc = getattr(resp, "status_code", None)
+                # httpx/requests могут иметь .text/.content
+                try:
+                    text = resp.text
+                    if text and len(text) > 300:
+                        text = text[:300] + "…"
+                except Exception:
+                    text = None
+                parts.append(f"response_status={sc}")
+                if text:
+                    parts.append(f"response_text={text}")
+            if getattr(err, "args", None):
+                parts.append(f"args={err.args}")
+            return "; ".join(parts)
+        except Exception:
+            return base
+
     def decorator(func):
         if inspect.iscoroutinefunction(func):
-            # ==== ASYNC ВЕТКА ====
             @functools.wraps(func)
             async def async_wrapper(*args, **kwargs):
                 backoff = 1.0
@@ -1471,24 +1497,20 @@ def cms_data_get_decorator(tag: str = "execute func"):
                     try:
                         response = await func(*args, **kwargs)
 
-                        # HTTP-код
                         if getattr(response, "status_code", 0) != 200:
-                            logger.warning(f"[{tag}] CMS HTTP {getattr(response, 'status_code', '???')}; "
-                                           f"retry in {backoff:.1f}s")
+                            logger.warning(f"[{tag}] CMS HTTP {getattr(response, 'status_code', '???')}; retry in {backoff:.1f}s")
                             await asyncio.sleep(backoff)
                             backoff = min(backoff * 1.5, 10.0)
                             continue
 
-                        # JSON
                         try:
                             data = response.json()
                         except Exception as je:
-                            logger.warning(f"[{tag}] CMS JSON parse error: {je}; retry in {backoff:.1f}s")
+                            logger.warning(f"[{tag}] CMS JSON parse error: {je!r}; retry in {backoff:.1f}s")
                             await asyncio.sleep(backoff)
                             backoff = min(backoff * 1.5, 10.0)
                             continue
 
-                        # Спец-код прошивки
                         if data.get("result") == 24:
                             logger.debug(f"[{tag}] CMS busy (24); retry in {backoff:.1f}s")
                             await asyncio.sleep(backoff)
@@ -1498,14 +1520,16 @@ def cms_data_get_decorator(tag: str = "execute func"):
                         return response
 
                     except (*HTTPX_ERRORS, *REQUESTS_ERRORS, asyncio.TimeoutError) as err:
-                        logger.warning(f"[{tag}] Connection problem with CMS: {err}; retry in {backoff:.1f}s")
+                        # ключевая правка — подробности исключения
+                        logger.warning(f"[{tag}] Connection problem with CMS: {_exc_details(err)}; retry in {backoff:.1f}s")
+                        # при отладке можно добавить стек:
+                        # logger.debug("stack:", exc_info=True)
                         await asyncio.sleep(backoff)
                         backoff = min(backoff * 1.5, 10.0)
 
             return async_wrapper
 
         else:
-            # ==== SYNC ВЕТКА (как раньше) ====
             @functools.wraps(func)
             def sync_wrapper(*args, **kwargs):
                 backoff = 1.0
@@ -1514,8 +1538,7 @@ def cms_data_get_decorator(tag: str = "execute func"):
                         response = func(*args, **kwargs)
 
                         if getattr(response, "status_code", 0) != 200:
-                            logger.warning(f"[{tag}] CMS HTTP {getattr(response, 'status_code', '???')}; "
-                                           f"retry in {backoff:.1f}s")
+                            logger.warning(f"[{tag}] CMS HTTP {getattr(response, 'status_code', '???')}; retry in {backoff:.1f}s")
                             time.sleep(backoff)
                             backoff = min(backoff * 1.5, 10.0)
                             continue
@@ -1523,7 +1546,7 @@ def cms_data_get_decorator(tag: str = "execute func"):
                         try:
                             data = response.json()
                         except Exception as je:
-                            logger.warning(f"[{tag}] CMS JSON parse error: {je}; retry in {backoff:.1f}s")
+                            logger.warning(f"[{tag}] CMS JSON parse error: {je!r}; retry in {backoff:.1f}s")
                             time.sleep(backoff)
                             backoff = min(backoff * 1.5, 10.0)
                             continue
@@ -1537,13 +1560,15 @@ def cms_data_get_decorator(tag: str = "execute func"):
                         return response
 
                     except REQUESTS_ERRORS as err:
-                        logger.warning(f"[{tag}] Connection problem with CMS: {err}; retry in {backoff:.1f}s")
+                        logger.warning(f"[{tag}] Connection problem with CMS: {_exc_details(err)}; retry in {backoff:.1f}s")
+                        # logger.debug("stack:", exc_info=True)
                         time.sleep(backoff)
                         backoff = min(backoff * 1.5, 10.0)
 
             return sync_wrapper
 
     return decorator
+
 
 
 @cms_data_get_decorator()
