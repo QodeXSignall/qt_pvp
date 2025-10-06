@@ -649,8 +649,8 @@ async def download_single_clip_per_channel(
     Возвращает: {channel_id: absolute_video_path or None}
     """
     TIME_FMT = "%Y-%m-%d %H:%M:%S"
-    dt_start = datetime.datetime.strptime(interest["start_time"], TIME_FMT)
-    dt_end   = datetime.datetime.strptime(interest["end_time"],   TIME_FMT)
+    dt_start = datetime.datetime.strptime(interest["photo_before_timestamp"], TIME_FMT)
+    dt_end   = datetime.datetime.strptime(interest["photo_after_timestamp"],   TIME_FMT)
 
     start_sec = dt_start.hour * 3600 + dt_start.minute * 60 + dt_start.second
     end_sec   = dt_end.hour   * 3600 + dt_end.minute   * 60 + dt_end.second

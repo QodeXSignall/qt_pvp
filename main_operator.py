@@ -195,12 +195,19 @@ class Main:
                     name=interest_name,
                     dest=settings.CLOUD_PATH
                 )
+
                 if not cloud_paths:
                     logger.error(f"{reg_id}: Не удалось создать папки для {interest_name}. Пропускаем интерес.")
                     return interest["end_time"]
 
                 interest_cloud_folder = cloud_paths["interest_folder_path"]
                 interest["cloud_folder"] = interest_cloud_folder
+                pics_after_folder = posixpath.join(interest_cloud_folder, "after_pics")
+                pics_before_folder = posixpath.join(interest_cloud_folder, "before_pics")
+                interest["pics_before_folder"] = pics_before_folder
+                interest["pics_after_folder"] = pics_after_folder
+                cloud_uploader.create_folder_if_not_exists(cloud_uploader.client, pics_before_folder)
+                cloud_uploader.create_folder_if_not_exists(cloud_uploader.client, pics_after_folder)
 
                 # 1) проверяем наличие полного видео интереса в облаке
                 interest_video_exists = await asyncio.to_thread(
@@ -243,7 +250,7 @@ class Main:
                 if not interest_video_exists:
                     full_clip_path = channels_files_dict.get(chanel_id)
                     if full_clip_path:
-                        upload_status = await self.upload_interest_video_cloud(
+                         await self.upload_interest_video_cloud(
                             reg_id=reg_id,
                             interest_name=interest_name,
                             video_path=full_clip_path,
@@ -368,9 +375,6 @@ class Main:
         4) Удаляем все локальные клипы, кроме выбранного канала (опционально)
         Возвращает: {"upload_status": bool, "frames_before": [...], "frames_after": [...]}
         """
-        interest_folder_path = enriched["cloud_folder"]
-        pics_after_folder = posixpath.join(interest_folder_path, "after_pics")
-        pics_before_folder = posixpath.join(interest_folder_path, "before_pics")
         channels = [0, 1, 2, 3]
 
         # 2) Достаём из каждого клипа первый/последний кадр
@@ -397,7 +401,7 @@ class Main:
         # 3) Заливка кадров в облако — та же функция, что и раньше  :contentReference[oaicite:7]{index=7}
         upload_status = await asyncio.to_thread(
             cloud_uploader.create_pics,
-            frames_before, frames_after, pics_before_folder, pics_after_folder
+            frames_before, frames_after, enriched["pics_before_folder"], enriched["pics_after_folder"]
         )
         return {"upload_status": upload_status, "frames_before": frames_before, "frames_after": frames_after}
 
