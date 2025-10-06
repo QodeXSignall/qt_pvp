@@ -511,6 +511,10 @@ async def download_video(
                 logger.warning(f"{reg_id}: устройство офлайн")
                 raise DeviceOfflineError(message or "Device is not online!")
 
+            if result == 23 and "device offline" in message:
+                logger.warning(f"{reg_id}: устройство офлайн")
+                raise DeviceOfflineError(message or "Device is not online!")
+
             # наш кейс: устройство «не ответило» — НЕ двигаем окно, повторяем то же
             if result == 22 and "device no response" in message.lower():
                 if no_resp_attempt < MAX_NO_RESPONSE_RETRIES:
