@@ -57,24 +57,38 @@ class Main:
             if reg_id in self.devices_in_progress:
                 self.devices_in_progress.remove(reg_id)
 
-    def get_interests(self, reg_id, reg_info, start_time, stop_time):
+    async def get_interests_async(self, reg_id, reg_info, start_time, stop_time):
+        """
+        Асинхронная версия получения интересов:
+        - CMS треки (queryTrackDetail) — в thread-пуле через asyncio.to_thread
+        - CMS alarm detail — в thread-пуле через asyncio.to_thread
+        - Подготовка алармов/сшивка — синхронно (CPU), можно оставить в основном потоке
+        Логика «шага назад по минуте» (max_extra_pulls) сохранена.
+        """
         max_extra_pulls = 8  # максимум шагов назад по минуте
         pulls = 0
 
         while True:
             start_time_dt = datetime.datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
 
-            tracks = cms_api.get_device_track_all_pages(
-                jsession=self.jsession,
-                device_id=reg_id,
-                start_time=start_time,
-                stop_time=stop_time,
+            # --- ВАЖНО: обе CMS-функции синхронные -> уводим в thread-пул ---
+            tracks = await asyncio.to_thread(
+                cms_api.get_device_track_all_pages,
+                self.jsession,
+                reg_id,
+                start_time,
+                stop_time
             )
-            alarm_reports = cms_api_funcs.get_device_alarms(
-                jsession=self.jsession,
-                dev_idno=reg_id,
-                begintime=start_time,
-                endtime=stop_time)
+
+            alarm_reports = await asyncio.to_thread(
+                cms_api_funcs.get_device_alarms,
+                self.jsession,
+                reg_id,  # dev_idno
+                None,  # vehi_idno
+                start_time,
+                stop_time
+            )
+
             prepared = cms_api_funcs.prepare_alarms(
                 raw_alarms=alarm_reports.get("alarms", []),
                 reg_cfg=reg_info,
@@ -90,10 +104,10 @@ class Main:
                 alarms=prepared
             )
 
-            if "interests" in interests:
+            if isinstance(interests, dict) and "interests" in interests:
                 return interests["interests"]
 
-            elif "error" in interests:
+            elif isinstance(interests, dict) and "error" in interests:
                 pulls += 1
                 if pulls > max_extra_pulls:
                     logger.warning(f"[GUARD] Достигнут предел догрузок (pulls={pulls}). Останавливаемся.")
@@ -101,10 +115,11 @@ class Main:
                 # двигаемся на минуту назад
                 start_time = (start_time_dt - datetime.timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S")
                 logger.info(f"Теперь ищем треки с {start_time}")
+                continue
 
             else:
                 # На случай иных форматов ответа
-                logger.warning(f"[ANALYZE] Неожиданный формат: {type(interests)}")
+                logger.warning(f"[ANALYZE] Неожиданный формат из find_interests_by_lifting_switches: {type(interests)}")
                 return []
 
     async def download_reg_videos(self, reg_id, plate, chanel_id: int = None,
@@ -158,7 +173,7 @@ class Main:
         logger.info(f"{reg_id} Начало: {start_time}, Конец: {end_time}")
 
         # Определяем интересные интервалы
-        interests = self.get_interests(reg_id, reg_info, start_time, end_time)
+        interests = await self.get_interests(reg_id, reg_info, start_time, end_time)
         if not interests:
             logger.info(f"{reg_id}: Интересы не найдены в интервале {start_time} - {end_time}")
             main_funcs.save_new_reg_last_upload_time(reg_id, end_time)
@@ -464,29 +479,32 @@ class Main:
 
     async def mainloop(self):
         logger.info("Mainloop has been launched with success.")
+        self._running: set[asyncio.Task] = set()
+
         while True:
+            # важно: get_devices_online в thread, чтобы не блокировать loop
             devices_online = await asyncio.to_thread(self.get_devices_online)
 
-            tasks = []
             for device_dict in devices_online:
                 reg_id = device_dict["did"]
                 plate = device_dict["vid"]
+
+                # если девайс уже в работе — пропускаем
+                if reg_id in self.devices_in_progress:
+                    continue
 
                 async def _run_with_limit(rid, pl):
                     async with self._devices_sem:
                         await self.operate_device(rid, pl)
 
-                tasks.append(asyncio.create_task(_run_with_limit(reg_id, plate)))
-
-            if tasks:
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-                for r in results:
-                    if isinstance(r, Exception):
-                        logger.error("operate_device raised: %r", r)
+                # Стартуем корутину и НЕ ждём всю пачку
+                t = asyncio.create_task(_run_with_limit(reg_id, plate))
+                self._running.add(t)
+                t.add_done_callback(self._running.discard)
 
             await asyncio.sleep(3)
-        cms_http.close_cms_async_client()
 
+        cms_http.close_cms_async_client()
 
 
 if __name__ == "__main__":
