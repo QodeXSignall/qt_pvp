@@ -1,11 +1,12 @@
 from qt_pvp.cms_interface import functions
+from qt_pvp import functions as core_funcs
 from requests.adapters import HTTPAdapter
 from qt_pvp.cms_interface import cms_http
 from qt_pvp.cms_interface import limits
 from urllib3.util.retry import Retry
+from typing import List, Dict, Tuple
 from qt_pvp.logger import logger
 from qt_pvp import settings
-from typing import List
 import numpy as np
 import datetime
 import requests
@@ -632,6 +633,174 @@ def get_dev_idno_by_plate(jsession: str, plate_number: str,
         print("123")
         return None
 
+# --- ДОБАВИТЬ В КОНЕЦ cms_api.py ---
+
+async def download_single_clip_per_channel(
+    jsession: str,
+    reg_id: str,
+    interest: dict,
+    channels: list[int] = (0, 1, 2, 3),
+    merge_to_single_file: bool = True,
+) -> Dict[int, str | None]:
+    """
+    Скачивает РОВНО ОДИН финальный видеоклип на каждый канал так,
+    чтобы в нём попадали и начало, и конец интереса.
+    Если CMS отдаёт несколько отрезков — конкатенируем в один файл.
+    Возвращает: {channel_id: absolute_video_path or None}
+    """
+    TIME_FMT = "%Y-%m-%d %H:%M:%S"
+    dt_start = datetime.datetime.strptime(interest["start_time"], TIME_FMT)
+    dt_end   = datetime.datetime.strptime(interest["end_time"],   TIME_FMT)
+
+    start_sec = dt_start.hour * 3600 + dt_start.minute * 60 + dt_start.second
+    end_sec   = dt_end.hour   * 3600 + dt_end.minute   * 60 + dt_end.second
+
+    out: Dict[int, str | None] = {}
+    interest_tmp_dir = os.path.join(settings.TEMP_FOLDER, interest["name"])
+    os.makedirs(interest_tmp_dir, exist_ok=True)
+
+    async def _one_channel(ch: int) -> Tuple[int, str | None]:
+        # Скачиваем все куски на интервале, дальше сведём в один файл
+        videos_paths = await download_video(
+            jsession=jsession,
+            reg_id=reg_id,
+            channel_id=ch,
+            year=dt_start.year, month=dt_start.month, day=dt_start.day,
+            start_sec=start_sec,
+            end_sec=end_sec,
+            adjustment_sequence=(0, 5, 10, 15, 30),
+        )  # уже есть в проекте  :contentReference[oaicite:1]{index=1}
+
+        if not videos_paths:
+            logger.warning(f"{reg_id}: ch={ch} клипы не получены.")
+            return ch, None
+
+        if len(videos_paths) == 1:
+            return ch, videos_paths[0]
+
+        # конкат в один файл (mp4) тем же методом, что используешь для интересов
+        merged_path = os.path.join(interest_tmp_dir, f"ch{ch}_merged.mp4")
+        try:
+            await asyncio.to_thread(core_funcs.concatenate_videos, videos_paths, merged_path)  # :contentReference[oaicite:2]{index=2}
+            for video_path in videos_paths:
+                if os.path.exists(video_path):
+                    logger.debug(f"{reg_id}. Удаляем исходный файл до конкатенации {video_path}")
+                    os.remove(video_path)
+            return ch, merged_path
+        except Exception as e:
+            logger.error(f"{reg_id}: ch={ch} concat failed: {e}")
+            return ch, None
+
+    tasks = [asyncio.create_task(_one_channel(ch)) for ch in channels]
+    for t in asyncio.as_completed(tasks):
+        ch, path = await t
+        out[ch] = path
+    return out
+
+
+def _extract_edge_frames_sync(
+    video_path: str,
+    channel_id: int,
+    output_dir: str,
+    reg_id: str,
+    max_retries: int = 3,
+) -> Tuple[str | None, str | None]:
+    """
+    Синхронно извлекает первый и последний кадр из видео.
+    Возвращает (first_frame_path, last_frame_path).
+    """
+    if not video_path or not os.path.exists(video_path) or os.path.getsize(video_path) < 10 * 1024:
+        logger.error(f"{reg_id}. ch={channel_id} плохой файл для кадров: {video_path}")
+        return None, None
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    cap = None
+    for attempt in range(max_retries):
+        cap = cv2.VideoCapture(video_path)
+        if cap.isOpened():
+            break
+        time.sleep(1)
+
+    if not cap or not cap.isOpened():
+        logger.error(f"{reg_id}. ch={channel_id} VideoCapture fail: {video_path}")
+        return None, None
+
+    # первый кадр
+    ok1, frame1 = cap.read()
+    first_path = None
+    if ok1 and frame1 is not None:
+        first_path = os.path.join(output_dir, f"{channel_id}_{uuid.uuid4().hex}_before.jpg")
+        cv2.imwrite(first_path, frame1)
+
+    # последний кадр
+    last_path = None
+    try:
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+        if total > 1:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, total - 1)
+            ok2, frame2 = cap.read()
+            if ok2 and frame2 is not None:
+                last_path = os.path.join(output_dir, f"{channel_id}_{uuid.uuid4().hex}_after.jpg")
+                cv2.imwrite(last_path, frame2)
+        else:
+            # fallback: перемотка по времени на -200мс от конца
+            dur_ms = cap.get(cv2.CAP_PROP_POS_MSEC)
+            if dur_ms and dur_ms > 500:
+                cap.set(cv2.CAP_PROP_POS_MSEC, max(0, dur_ms - 200))
+                ok2, frame2 = cap.read()
+                if ok2 and frame2 is not None:
+                    last_path = os.path.join(output_dir, f"{channel_id}_{uuid.uuid4().hex}_after.jpg")
+                    cv2.imwrite(last_path, frame2)
+    finally:
+        cap.release()
+
+    # заглушки, если чего-то не вышло (логика заглушек уже есть)  :contentReference[oaicite:3]{index=3}
+    if not first_path:
+        first_path = _create_placeholder_image(output_dir)
+        log_no_image_event(reg_id, first_path, context=f"before_ch{channel_id}")  # :contentReference[oaicite:4]{index=4}
+    if not last_path:
+        last_path = _create_placeholder_image(output_dir)
+        log_no_image_event(reg_id, last_path, context=f"after_ch{channel_id}")   # :contentReference[oaicite:5]{index=5}
+    return first_path, last_path
+
+
+async def extract_edge_frames_from_video(
+    video_path: str,
+    channel_id: int,
+    reg_id: str,
+    output_dir: str = settings.FRAMES_TEMP_FOLDER,
+) -> Tuple[str | None, str | None]:
+    """
+    Асинхронная обёртка над синхронной выжимкой кадров (первый/последний).
+    """
+    async with limits.get_frame_sem():  # используем существующий семафор кадров  :contentReference[oaicite:6]{index=6}
+        return await asyncio.to_thread(
+            _extract_edge_frames_sync, video_path, channel_id, output_dir, reg_id
+        )
+
+
+def delete_videos_except(
+    videos_by_channel: Dict[int, str | None],
+    keep_channel_id: int | None
+) -> int:
+    """
+    Удаляет все локальные видео, кроме выбранного канала (если указан).
+    Возвращает кол-во удалённых файлов.
+    """
+    removed = 0
+    for ch, p in (videos_by_channel or {}).items():
+        if not p:
+            continue
+        if keep_channel_id is not None and ch == keep_channel_id:
+            continue
+        try:
+            if os.path.exists(p):
+                os.remove(p)
+                removed += 1
+        except Exception as e:
+            logger.warning(f"Не удалось удалить {p}: {e}")
+    return removed
 
 # for interest in interests:
 #    get_interest_download_path(jsession, interest)

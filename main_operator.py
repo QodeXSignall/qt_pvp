@@ -202,36 +202,72 @@ class Main:
                 interest_cloud_folder = cloud_paths["interest_folder_path"]
                 interest["cloud_folder"] = interest_cloud_folder
 
-                exists = await asyncio.to_thread(
-                    cloud_uploader.interest_video_exists,
+                # 1) проверяем наличие полного видео интереса в облаке
+                interest_video_exists = await asyncio.to_thread(
+                    cloud_uploader.check_if_interest_video_exists,
                     interest_name
                 )
 
-                if not exists:
-                    logger.debug(f"{reg_id}: Начинаем скачивание видео для {interest_name}")
-                    enriched = await cms_api.download_interest_videos(
-                        self.jsession, interest, chanel_id, reg_id=reg_id,
-                        adjustment_sequence=(0, 15, 30, 45),
-                    )
-                    if not enriched:
-                        logger.warning(f"{reg_id}: Не удалось получить видеофайлы для {interest_name}")
-                        return interest["end_time"]
+                # 2) какие каналы нужны для кадров
+                before_channels_to_download, after_channels_to_download = await self.get_channels_to_download_pics(
+                    interest_cloud_folder
+                )
 
-                    # json в облако — тоже в thread
-                    await cloud_uploader.upload_dict_as_json_to_cloud_async(
-                        data=enriched["report"], remote_folder_path=interest["cloud_folder"]
-                    )
+                # 3) если видео по интересу в облаке НЕТ — добавляем канал полного ролика
+                to_download_for_full_clip = [chanel_id] if not interest_video_exists else []
 
-                    await self.process_and_upload_videos_async(reg_id, enriched)
-                else:
-                    logger.info(f"{reg_id}. Видео по интересу {interest_name} уже загружено на облако. Пропускаем...")
+                # детерминированное объединение без дублей
+                final_channels_to_download = sorted({
+                    *before_channels_to_download,
+                    *after_channels_to_download,
+                    *to_download_for_full_clip
+                })
 
-                # Кадры до/после — оставляем как есть (пока без параллели каналов)
+                logger.debug(
+                    f"{reg_id}. Нужно скачать видео интереса: {not interest_video_exists}. "
+                    f"Кадры ДО: {before_channels_to_download}. "
+                    f"Кадры ПОСЛЕ: {after_channels_to_download}. "
+                    f"Итого каналы: {final_channels_to_download}"
+                )
+
+                # 4) скачиваем по одному клипу на канал
+                channels_files_dict = await cms_api.download_single_clip_per_channel(
+                    jsession=self.jsession,
+                    reg_id=reg_id,
+                    interest=interest,
+                    channels=final_channels_to_download
+                )
+
+                # 5) если надо — выгружаем «полный» клип в облако (только для chanel_id)
+                if not interest_video_exists:
+                    full_clip_path = channels_files_dict.get(chanel_id)
+                    if full_clip_path:
+                        await self.upload_interest_video_cloud(
+                            reg_id=reg_id,
+                            interest_name=interest_name,
+                            video_path=full_clip_path,
+                            cloud_folder=cloud_paths["interest_folder_path"]
+                        )
+                    else:
+                        logger.warning(
+                            f"{reg_id}: Полный клип по каналу {chanel_id} не получен — пропускаем загрузку видео.")
+
+                # 6) извлекаем кадры из КАЖДОГО скачанного клипа и выгружаем их
                 if settings.config.getboolean("General", "pics_before_after"):
-                    upload_status = await self.upload_frames_before_after(reg_id, interest)
+                    upload_status = await self.process_frames_before_after_v2(
+                        reg_id, interest, channels_files_dict  # ← передаём словарь!!!
+                    )
                     if upload_status["upload_status"]:
                         for frame in upload_status["frames_before"] + upload_status["frames_after"]:
                             logger.info(f"{reg_id}: Загрузка фото ок. Удаляем локальный файл {frame}.")
+
+                    # 7) чистим локальные клипы (кроме «полного» по нужному каналу)
+                    removed = cms_api.delete_videos_except(
+                        videos_by_channel=channels_files_dict,
+                        keep_channel_id=chanel_id if not interest_video_exists else None
+                    )
+                    logger.info(f"{reg_id}: V2 завершено. Upload={upload_status}. Удалено видеофайлов: {removed}.")
+
 
                 await cloud_uploader.append_report_line_to_cloud_async(
                     remote_folder_path=cloud_paths["date_folder_path"],
@@ -286,10 +322,9 @@ class Main:
         logger.info(
             f"{reg_id}. Пакет интересов завершён: {len(end_times)}/{len(interests)}; last_upload_time -> {new_last}")
 
-    async def upload_frames_before_after(self, reg_id, enriched):
-        interest_folder_path = enriched["cloud_folder"]
-        pics_after_folder = posixpath.join(interest_folder_path, "after_pics")
-        pics_before_folder = posixpath.join(interest_folder_path, "before_pics")
+    async def get_channels_to_download_pics(self, interest_cloud_path):
+        pics_after_folder = posixpath.join(interest_cloud_path, "after_pics")
+        pics_before_folder = posixpath.join(interest_cloud_path, "before_pics")
 
         channels = [0, 1, 2, 3]
 
@@ -302,7 +337,55 @@ class Main:
 
         before_channels_to_download = [ch for ch, exists in zip(channels, before_exists) if not exists]
         after_channels_to_download = [ch for ch, exists in zip(channels, after_exists) if not exists]
+        return before_channels_to_download, after_channels_to_download
 
+    # --- ДОБАВИТЬ В КЛАСС Main (main_operator.py) ---
+    async def process_frames_before_after_v2(self, reg_id: str, enriched: dict, videos_by_channel):
+        """
+        ВЕРСИЯ 2:
+        1) Скачиваем по ОДНОМУ клипу на канал, покрывающему [start_time; end_time]
+        2) Из каждого клипа берём первый и последний кадр
+        3) Заливаем в облако в before_pics / after_pics
+        4) Удаляем все локальные клипы, кроме выбранного канала (опционально)
+        Возвращает: {"upload_status": bool, "frames_before": [...], "frames_after": [...]}
+        """
+        interest_folder_path = enriched["cloud_folder"]
+        pics_after_folder = posixpath.join(interest_folder_path, "after_pics")
+        pics_before_folder = posixpath.join(interest_folder_path, "before_pics")
+        channels = [0, 1, 2, 3]
+
+        # 2) Достаём из каждого клипа первый/последний кадр
+        frames_before: list[str] = []
+        frames_after: list[str] = []
+
+        async def _extract_for_channel(ch: int, path: str | None):
+            if not path:
+                return None, None
+            return await cms_api.extract_edge_frames_from_video(
+                video_path=path,
+                channel_id=ch,
+                reg_id=reg_id,
+            )
+
+        extract_tasks = [asyncio.create_task(_extract_for_channel(ch, videos_by_channel.get(ch))) for ch in channels]
+        for ch, t in zip(channels, asyncio.as_completed(extract_tasks)):
+            first_path, last_path = await t
+            if first_path:
+                frames_before.append(first_path)
+            if last_path:
+                frames_after.append(last_path)
+
+        # 3) Заливка кадров в облако — та же функция, что и раньше  :contentReference[oaicite:7]{index=7}
+        upload_status = await asyncio.to_thread(
+            cloud_uploader.create_pics,
+            frames_before, frames_after, pics_before_folder, pics_after_folder
+        )
+        return {"upload_status": upload_status, "frames_before": frames_before, "frames_after": frames_after}
+
+
+    async def process_frames_before_after(self, reg_id, enriched):
+        interest_folder_path = enriched["cloud_folder"]
+        before_channels_to_download, after_channels_to_download = await self.get_channels_to_download_pics(interest_folder_path)
         logger.debug(f"{reg_id}: интерес {enriched['name']}. Для скачивания определены кадры ДО - {before_channels_to_download}. "
                      f"После - {after_channels_to_download}")
 
@@ -337,7 +420,7 @@ class Main:
 
         upload_status = await asyncio.to_thread(
             cloud_uploader.create_pics,
-            frames_before, frames_after, pics_before_folder, pics_after_folder
+            frames_before, frames_after
         )
         return {"upload_status": upload_status, "frames_before": frames_before, "frames_after": frames_after}
 
@@ -385,25 +468,22 @@ class Main:
             logger.warning(
                 f"{reg_id}: Нечего выгружать на облако.")
             return
+        await self.upload_interest_video_cloud(reg_id=reg_id, interest_name=interest_name,
+                                         video_path=result["output_video_path"], cloud_folder=interest["cloud_folder"])
 
+    async def upload_interest_video_cloud(self, reg_id, interest_name, video_path, cloud_folder):
         # Загружаем видео
         logger.info(
             f"{reg_id}: Загружаем видео интереса {interest_name} в облако.")
         upload_status = await asyncio.to_thread(
-            cloud_uploader.upload_file, result["output_video_path"],
-            interest["cloud_folder"]
-        )
+            cloud_uploader.upload_file, video_path, cloud_folder)
 
         if upload_status:
             logger.info(f"{reg_id}: Загрузка видео интереса {interest_name} прошла успешно.")
             if settings.config.getboolean("General", "del_source_video_after_upload"):
-                if os.path.exists(result["output_video_path"]):
-                    logger.info(f"{reg_id}: Удаляем локальное видео интереса {interest_name}. ({result['output_video_path']}).")
-                    os.remove(result["output_video_path"])
-                    for file_path in result["files_to_delete"]:
-                        if os.path.exists(file_path):
-                            logger.debug(f"Удаляем {file_path}")
-                            os.remove(file_path)
+                if os.path.exists(video_path):
+                    logger.info(f"{reg_id}: Удаляем локальное видео интереса {interest_name}. ({video_path}).")
+                    os.remove(video_path)
                 interest_temp_folder = os.path.join(settings.TEMP_FOLDER,
                                            interest_name)
                 if os.path.exists(interest_temp_folder):
@@ -431,15 +511,15 @@ class Main:
                 logger.error(
                     f"{reg_id}: Файл {video_path} не найден. Пропускаем.")
                 continue
-            logger.info(
-                f"{reg_id}: Конвертация {video_path} в {self.output_format}.")
-            output_filename = os.path.join(
-                settings.INTERESTING_VIDEOS_FOLDER,
-                f"{interest_name}_{file_paths.index(video_path)}.{self.output_format}")
-            converted_video = main_funcs.process_video_file(
-                video_path, output_filename)
-            if converted_video:
-                converted_videos.append(converted_video)
+            #logger.info(
+            #    f"{reg_id}: Конвертация {video_path} в {self.output_format}.")
+            #output_filename = os.path.join(
+            #    settings.INTERESTING_VIDEOS_FOLDER,
+            ##    f"{interest_name}_{file_paths.index(video_path)}.{self.output_format}")
+            #converted_video = main_funcs.process_video_file(
+            #    video_path, output_filename)
+            #if converted_video:
+            #    converted_videos.append(converted_video)
 
         final_videos_paths_list = (converted_videos if converted_videos else file_paths)
         if len(final_videos_paths_list) > 1:
