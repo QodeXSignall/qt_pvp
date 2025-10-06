@@ -242,7 +242,7 @@ class Main:
                 if not interest_video_exists:
                     full_clip_path = channels_files_dict.get(chanel_id)
                     if full_clip_path:
-                        await self.upload_interest_video_cloud(
+                        upload_status = await self.upload_interest_video_cloud(
                             reg_id=reg_id,
                             interest_name=interest_name,
                             video_path=full_clip_path,
@@ -266,6 +266,24 @@ class Main:
                         videos_by_channel=channels_files_dict,
                         keep_channel_id=chanel_id if not interest_video_exists else None
                     )
+
+                    # И только теперь можем удалить основное видео интереса
+                    if upload_status:
+                        if upload_status:
+                            logger.info(f"{reg_id}: Загрузка видео интереса {interest_name} прошла успешно.")
+                            if settings.config.getboolean("General", "del_source_video_after_upload"):
+                                if os.path.exists(full_clip_path):
+                                    logger.info(
+                                        f"{reg_id}: Удаляем локальное видео интереса {interest_name}. ({video_path}).")
+                                    os.remove(full_clip_path)
+                                interest_temp_folder = os.path.join(settings.TEMP_FOLDER,
+                                                                    interest_name)
+                                if os.path.exists(interest_temp_folder):
+                                    logger.info(
+                                        f"{reg_id}: Удаляем временную директорию интереса {interest_name}. ({interest_temp_folder}).")
+                                    shutil.rmtree(interest_temp_folder)
+                        else:
+                            logger.error(f"{reg_id}: Ошибка загрузки {interest_name}.")
                     logger.info(f"{reg_id}: V2 завершено. Upload={upload_status}. Удалено видеофайлов: {removed}.")
 
 
@@ -477,20 +495,7 @@ class Main:
             f"{reg_id}: Загружаем видео интереса {interest_name} в облако.")
         upload_status = await asyncio.to_thread(
             cloud_uploader.upload_file, video_path, cloud_folder)
-
-        if upload_status:
-            logger.info(f"{reg_id}: Загрузка видео интереса {interest_name} прошла успешно.")
-            if settings.config.getboolean("General", "del_source_video_after_upload"):
-                if os.path.exists(video_path):
-                    logger.info(f"{reg_id}: Удаляем локальное видео интереса {interest_name}. ({video_path}).")
-                    os.remove(video_path)
-                interest_temp_folder = os.path.join(settings.TEMP_FOLDER,
-                                           interest_name)
-                if os.path.exists(interest_temp_folder):
-                    logger.info(f"{reg_id}: Удаляем временную директорию интереса {interest_name}. ({interest_temp_folder}).")
-                    shutil.rmtree(interest_temp_folder)
-        else:
-            logger.error(f"{reg_id}: Ошибка загрузки {interest_name}.")
+        return upload_status
 
     async def process_video_and_return_path(self, reg_id, interest,
                                             file_paths):
