@@ -10,6 +10,20 @@ import time
 import uuid
 import os
 
+
+async def create_interest_folder_path_async(name, dest):
+    return await asyncio.to_thread(create_interest_folder_path, name, dest)
+
+async def interest_video_exists_async(name):
+    return await asyncio.to_thread(interest_video_exists, name)
+
+async def upload_dict_as_json_to_cloud_async(data, remote_folder_path):
+    return await asyncio.to_thread(upload_dict_as_json_to_cloud, data, remote_folder_path)
+
+async def append_report_line_to_cloud_async(remote_folder_path, created_start_time, created_end_time, file_name):
+    return await asyncio.to_thread(append_report_line_to_cloud, remote_folder_path, created_start_time, created_end_time, file_name)
+
+
 class CloudOffline(RuntimeError):
     """CMS: устройство офлайн — нужно отложить обработку интереса и попробовать позже."""
     pass

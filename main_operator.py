@@ -176,31 +176,37 @@ class Main:
                 interest_name = interest["name"]
 
                 # Создаём пути в облаке под интерес
-                cloud_paths = cloud_uploader.create_interest_folder_path(
-                    interest_name=interest_name,
-                    dest_directory=settings.CLOUD_PATH
+                cloud_paths = await cloud_uploader.create_interest_folder_path_async(
+                    name=interest_name,
+                    dest=settings.CLOUD_PATH
                 )
                 if not cloud_paths:
                     logger.error(f"{reg_id}: Не удалось создать папки для {interest_name}. Пропускаем интерес.")
                     return interest["end_time"]
+
                 interest_cloud_folder = cloud_paths["interest_folder_path"]
                 interest["cloud_folder"] = interest_cloud_folder
 
-                if not cloud_uploader.interest_video_exists(interest_name):
+                exists = await asyncio.to_thread(
+                    cloud_uploader.interest_video_exists,
+                    interest_name
+                )
+
+                if not exists:
                     logger.debug(f"{reg_id}: Начинаем скачивание видео для {interest_name}")
                     enriched = await cms_api.download_interest_videos(
                         self.jsession, interest, chanel_id, reg_id=reg_id,
                         adjustment_sequence=(0, 15, 30, 45),
-                    )  # вернёт interest с file_paths, либо None
-
+                    )
                     if not enriched:
                         logger.warning(f"{reg_id}: Не удалось получить видеофайлы для {interest_name}")
-                        # Важно: всё равно вернём end_time, чтобы батч мог продвинуть last_upload_time вперёд
                         return interest["end_time"]
 
-                    cloud_uploader.upload_dict_as_json_to_cloud(
+                    # json в облако — тоже в thread
+                    await cloud_uploader.upload_dict_as_json_to_cloud_async(
                         data=enriched["report"], remote_folder_path=interest["cloud_folder"]
                     )
+
                     await self.process_and_upload_videos_async(reg_id, enriched)
                 else:
                     logger.info(f"{reg_id}. Видео по интересу {interest_name} уже загружено на облако. Пропускаем...")
@@ -212,7 +218,7 @@ class Main:
                         for frame in upload_status["frames_before"] + upload_status["frames_after"]:
                             logger.info(f"{reg_id}: Загрузка фото ок. Удаляем локальный файл {frame}.")
 
-                cloud_uploader.append_report_line_to_cloud(
+                await cloud_uploader.append_report_line_to_cloud_async(
                     remote_folder_path=cloud_paths["date_folder_path"],
                     created_start_time=created_start_time.strftime(self.TIME_FMT),
                     created_end_time=datetime.datetime.now().strftime(self.TIME_FMT),
@@ -459,7 +465,7 @@ class Main:
     async def mainloop(self):
         logger.info("Mainloop has been launched with success.")
         while True:
-            devices_online = self.get_devices_online()
+            devices_online = await asyncio.to_thread(self.get_devices_online)
 
             tasks = []
             for device_dict in devices_online:
@@ -481,11 +487,6 @@ class Main:
             await asyncio.sleep(3)
         cms_http.close_cms_async_client()
 
-    def check_if_reg_online(self, reg_id):
-        devices_online = self.get_devices_online()
-        for device_dict in devices_online:
-            if reg_id == device_dict["did"]:
-                return True
 
 
 if __name__ == "__main__":
