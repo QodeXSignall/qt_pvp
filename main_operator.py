@@ -239,6 +239,7 @@ class Main:
                 )
 
                 # 5) если надо — выгружаем «полный» клип в облако (только для chanel_id)
+                full_clip_path = None
                 if not interest_video_exists:
                     full_clip_path = channels_files_dict.get(chanel_id)
                     if full_clip_path:
@@ -269,12 +270,12 @@ class Main:
 
                     # И только теперь можем удалить основное видео интереса
                     if upload_status:
-                        if upload_status:
+                        if full_clip_path and upload_status:
                             logger.info(f"{reg_id}: Загрузка видео интереса {interest_name} прошла успешно.")
                             if settings.config.getboolean("General", "del_source_video_after_upload"):
                                 if os.path.exists(full_clip_path):
                                     logger.info(
-                                        f"{reg_id}: Удаляем локальное видео интереса {interest_name}. ({video_path}).")
+                                        f"{reg_id}: Удаляем локальное видео интереса {interest_name}. ({full_clip_path}).")
                                     os.remove(full_clip_path)
                                 interest_temp_folder = os.path.join(settings.TEMP_FOLDER,
                                                                     interest_name)
