@@ -199,7 +199,6 @@ def get_device_track_all_pages(jsession: str, device_id: str, start_time: str,
         all_tracks += tracks_json["tracks"]
         if current_page >= total_pages:
             break
-    # logger.debug(f"Got tracks: {all_tracks}")
     return all_tracks
 
 
@@ -247,7 +246,7 @@ def _time_to_sec(dt: datetime.datetime) -> int:
 
 async def download_interest_videos(jsession, interest, chanel_id, reg_id,
                                    adjustment_sequence=(0, 15, 30, 45)):
-    logger.info("Загружаем видео...")
+    logger.info(f"f{reg_id}: Загружаем видео интереса {interest['name']}...")
     TIME_FMT = "%Y-%m-%d %H:%M:%S"
 
     # ВСЕГДА пересчитываем секунды из строковых времен
@@ -270,7 +269,7 @@ async def download_interest_videos(jsession, interest, chanel_id, reg_id,
     )
 
     if not file_paths:
-        logger.warning(f"{reg_id}: Не удалось получить видеофайлы для интереса")
+        logger.error(f"{reg_id}: Не удалось получить видеофайлы для интереса {interest['name']}")
         return None
 
     # не мутируем исходный словарь вне

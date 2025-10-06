@@ -545,7 +545,7 @@ def find_interests_by_lifting_switches(
                 idx += 1
             return out
         except Exception as e:
-            logger.warning(f"[ALARM GAP] Не удалось выбрать алармы в разрыве: {e}")
+            logger.warning(f"{reg_id}: [ALARM GAP] Не удалось выбрать алармы в разрыве: {e}")
             return []
 
     while i < len(tracks) - 1:
@@ -575,7 +575,7 @@ def find_interests_by_lifting_switches(
             gap_alarms = _alarms_in_gap(alarms, gap_start_ts, gap_end_ts)
 
             if gap_alarms:
-                logger.debug(f"[ALARM GAP] Разрыв {track['gt']} → {next_track['gt']} ({int(gap_sec)}s), найдено алармов: {len(gap_alarms)}")
+                logger.debug(f"{reg_id}:[ALARM GAP] Разрыв {track['gt']} → {next_track['gt']} ({int(gap_sec)}s), найдено алармов: {len(gap_alarms)}")
 
             for a in gap_alarms:
                 # Принимаем только «стоял в начале события» и известный тип груза
@@ -614,16 +614,16 @@ def find_interests_by_lifting_switches(
                 time_before = find_first_stable_stop(tracks, i, alarm_dt, settings, first_interest,
                                                      start_tracks_search_time)
                 if not time_before:
-                    logger.warning(f"[BEFORE] Не найдена остановка до alarm {alarm_ts_str}")
+                    logger.warning(f"{reg_id}:[BEFORE] Не найдена остановка до alarm {alarm_ts_str}")
                     # fallback ДО: 120 c для КГО, иначе базовый sec_before
                     fb_before = 30
                     time_before = (alarm_dt - datetime.timedelta(seconds=fb_before)).strftime("%Y-%m-%d %H:%M:%S")
-                    logger.warning(f"[BEFORE-FALLBACK] alarm-gap: {fb_before}с до {alarm_ts_str} => {time_before}")
+                    logger.warning(f"{reg_id}: [BEFORE-FALLBACK] alarm-gap: {fb_before}с до {alarm_ts_str} => {time_before}")
 
                 # ---- AFTER: стандартный поиск, иначе fallback от конца аларма ----
                 time_after, last_stop_idx = find_stop_after_lifting(tracks, i + 1, settings, logger)
                 if not time_after:
-                    logger.warning(f"[FALLBACK AFTER] используем fallback для alarm {alarm_ts_str}")
+                    logger.warning(f"{reg_id}: [FALLBACK AFTER] используем fallback для alarm {alarm_ts_str}")
                     end_dt = a.get("end_dt") or (alarm_dt + datetime.timedelta(seconds=sec_after))
                     fb_after = settings.config.getint("Interests", "AFTER_FALLBACK_SEC", fallback=30)
                     time_after = (end_dt + datetime.timedelta(seconds=fb_after)).strftime("%Y-%m-%d %H:%M:%S")
@@ -657,7 +657,7 @@ def find_interests_by_lifting_switches(
                 #_ = _merge_or_append(loading_intervals, interval, epsilon_sec=30)
                 loading_intervals.append(interval)
                 first_interest = False
-                logger.info(f"[ALARM GAP] Добавлен интерес по alarm {alarm_ts_str}: {time_before} → {time_after_adj}")
+                logger.info(f"{reg_id}: [ALARM GAP] Добавлен интерес по alarm {alarm_ts_str}: {time_before} → {time_after_adj}")
 
         # === Старая логика концевиков — без изменений ===
         s1 = track.get("s1")
@@ -673,26 +673,26 @@ def find_interests_by_lifting_switches(
         kgo_on = (kgo_bit_idx is not None) and (bits[kgo_bit_idx] == '1')
         if euro_on or kgo_on:
             cargo_type = "КГО" if kgo_on else "Контейнер"
-            logger.info(f"[SWITCH] Срабатывание концевика в {timestamp}, EuroIO(bit {euro_bit_idx})={bits[euro_bit_idx]}" + (f", KGOIO(bit {kgo_bit_idx})={bits[kgo_bit_idx]}" if kgo_bit_idx is not None else ""))
+            logger.info(f"{reg_id}: [SWITCH] Срабатывание концевика в {timestamp}, EuroIO(bit {euro_bit_idx})={bits[euro_bit_idx]}" + (f", KGOIO(bit {kgo_bit_idx})={bits[kgo_bit_idx]}" if kgo_bit_idx is not None else ""))
             if track.get("sp") > min_speed_for_switch_detect:
-                logger.debug(f"[SWITCH] Игнор: скорость {track.get('sp')} > {min_speed_for_switch_detect}")
+                logger.debug(f"{reg_id}: [SWITCH] Игнор: скорость {track.get('sp')} > {min_speed_for_switch_detect}")
                 i += 1
                 continue
 
-            logger.debug(f"[SWITCH] Принято: {cargo_type} в {timestamp}")
+            logger.debug(f"{reg_id}: [SWITCH] Принято: {cargo_type} в {timestamp}")
             switch_events = []
             current_dt = datetime.datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
 
             if i >= len(tracks):
-                logger.warning(f"[SWITCH] Индекс {i} вне диапазона треков. Прерывание.")
+                logger.warning(f"{reg_id}: [SWITCH] Индекс {i} вне диапазона треков. Прерывание.")
                 break
 
             # Находим время для фото ДО (Последнее время в окне стабильных остановок)
             time_before = find_first_stable_stop(tracks, i, current_dt, settings, first_interest, start_tracks_search_time)
             if not time_before:
-                logger.warning(f"[BEFORE] Не найдена остановка до сработки концевика в {timestamp}")
+                logger.warning(f"{reg_id}: [BEFORE] Не найдена остановка до сработки концевика в {timestamp}")
                 if first_interest:
-                    logger.warning("[BEFORE] Это был первый интерес, возвращаемся для получения дополнительных треков")
+                    logger.warning(f"{reg_id}: [BEFORE] Это был первый интерес, возвращаемся для получения дополнительных треков")
                     return {"error": "No stop before switch found for first interest"}
 
             lifting_end_idx = i
@@ -704,7 +704,7 @@ def find_interests_by_lifting_switches(
                 switch_events.append({"datetime": timestamp, "switch": kgo_bit_idx})
 
             # В этом цикле мы перебираем треки и ищем трек, когда погрузка закочена (по скорости и концевику)
-            logger.debug("Теперь ищем когда машина поехала после погрузки.")
+            logger.debug(f"{reg_id}: Теперь ищем когда машина поехала после погрузки.")
 
             move_started_at = None
             while lifting_end_idx + 1 < len(tracks):
@@ -719,7 +719,7 @@ def find_interests_by_lifting_switches(
                 next_bits = list(bin(next_s1_int & 0xFFFFFFFF)[2:].zfill(32))
                 next_bits.reverse()
 
-                logger.debug(f"Ищем момент когда машина поехала после погрузки. {next_track.get('gt')}, EuroIO(bit {euro_bit_idx})={next_bits[euro_bit_idx]}" + (f", KGOIO(bit {kgo_bit_idx})={next_bits[kgo_bit_idx]}" if kgo_bit_idx is not None else "") + f", sp={next_spd}")
+                logger.debug(f"{reg_id}: Ищем момент когда машина поехала после погрузки. {next_track.get('gt')}, EuroIO(bit {euro_bit_idx})={next_bits[euro_bit_idx]}" + (f", KGOIO(bit {kgo_bit_idx})={next_bits[kgo_bit_idx]}" if kgo_bit_idx is not None else "") + f", sp={next_spd}")
 
                 min_move_speed = settings.config.getint("Interests", "MIN_MOVE_SPEED")
                 min_move_duration = settings.config.getint("Interests", "MIN_MOVE_DURATION_SEC")
@@ -758,7 +758,7 @@ def find_interests_by_lifting_switches(
                 used_fallback = True
 
             if (last_stop_idx is None) and (not used_fallback):
-                logger.warning(f"[AFTER] Нет last_stop_idx — остановка не найдена после {timestamp}")
+                logger.warning(f"{reg_id}: [AFTER] Нет last_stop_idx — остановка не найдена после {timestamp}")
                 i = lifting_end_idx + 1
                 continue
 
@@ -773,7 +773,7 @@ def find_interests_by_lifting_switches(
             time_30_after = time_30_after_dt.strftime("%Y-%m-%d %H:%M:%S")
 
             if time_before and time_after:
-                logger.info(f"[INTEREST] Интерес от {time_before} до {time_after}")
+                logger.info(f"{reg_id}: [INTEREST] Интерес от {time_before} до {time_after}")
                 interval = get_interest_from_track(
                     tracks[-1],
                     start_time=time_before,
@@ -790,7 +790,7 @@ def find_interests_by_lifting_switches(
                 loading_intervals.append(interval)
                 first_interest = False
             else:
-                logger.info(f"[SKIP] Пропуск: нет {'time_before' if not time_before else ''}{' и ' if not time_before and not time_after else ''}{'time_after' if not time_after else ''}")
+                logger.info(f"{reg_id}: [SKIP] Пропуск: нет {'time_before' if not time_before else ''}{' и ' if not time_before and not time_after else ''}{'time_after' if not time_after else ''}")
 
             i = lifting_end_idx + 1
         else:
@@ -1496,13 +1496,18 @@ def cms_data_get_decorator(tag: str = "execute func"):
         if inspect.iscoroutinefunction(func):
             @functools.wraps(func)
             async def async_wrapper(*args, **kwargs):
+                reg_id = "ND"
+                if "device_id" in kwargs:
+                    reg_id = kwargs["device_id"]
+                if "reg_id" in kwargs:
+                    reg_id = kwargs["reg_id"]
                 backoff = 1.0
                 while True:
                     try:
                         response = await func(*args, **kwargs)
 
                         if getattr(response, "status_code", 0) != 200:
-                            logger.warning(f"[{tag}] CMS HTTP {getattr(response, 'status_code', '???')}; retry in {backoff:.1f}s")
+                            logger.warning(f"{reg_id}: [{tag}] CMS HTTP {getattr(response, 'status_code', '???')}; retry in {backoff:.1f}s")
                             await asyncio.sleep(backoff)
                             backoff = min(backoff * 1.5, 10.0)
                             continue
@@ -1510,13 +1515,13 @@ def cms_data_get_decorator(tag: str = "execute func"):
                         try:
                             data = response.json()
                         except Exception as je:
-                            logger.warning(f"[{tag}] CMS JSON parse error: {je!r}; retry in {backoff:.1f}s")
+                            logger.warning(f"{reg_id}: [{tag}] CMS JSON parse error: {je!r}; retry in {backoff:.1f}s")
                             await asyncio.sleep(backoff)
                             backoff = min(backoff * 1.5, 10.0)
                             continue
 
                         if data.get("result") == 24:
-                            logger.debug(f"[{tag}] CMS busy (24); retry in {backoff:.1f}s")
+                            logger.debug(f"{reg_id}: [{tag}] CMS busy (24); retry in {backoff:.1f}s")
                             await asyncio.sleep(backoff)
                             backoff = min(backoff * 1.5, 10.0)
                             continue
@@ -1525,7 +1530,7 @@ def cms_data_get_decorator(tag: str = "execute func"):
 
                     except (*HTTPX_ERRORS, *REQUESTS_ERRORS, asyncio.TimeoutError) as err:
                         # ключевая правка — подробности исключения
-                        logger.warning(f"[{tag}] Connection problem with CMS: {_exc_details(err)}; retry in {backoff:.1f}s")
+                        logger.warning(f"{reg_id}: [{tag}] Connection problem with CMS: {_exc_details(err)}; retry in {backoff:.1f}s")
                         # при отладке можно добавить стек:
                         # logger.debug("stack:", exc_info=True)
                         await asyncio.sleep(backoff)
@@ -1537,12 +1542,17 @@ def cms_data_get_decorator(tag: str = "execute func"):
             @functools.wraps(func)
             def sync_wrapper(*args, **kwargs):
                 backoff = 1.0
+                reg_id = "ND"
+                if "device_id" in kwargs:
+                    reg_id = kwargs["device_id"]
+                if "reg_id" in kwargs:
+                    reg_id = kwargs["reg_id"]
                 while True:
                     try:
                         response = func(*args, **kwargs)
 
                         if getattr(response, "status_code", 0) != 200:
-                            logger.warning(f"[{tag}] CMS HTTP {getattr(response, 'status_code', '???')}; retry in {backoff:.1f}s")
+                            logger.warning(f"{reg_id}: [{tag}] CMS HTTP {getattr(response, 'status_code', '???')}; retry in {backoff:.1f}s")
                             time.sleep(backoff)
                             backoff = min(backoff * 1.5, 10.0)
                             continue
@@ -1550,13 +1560,13 @@ def cms_data_get_decorator(tag: str = "execute func"):
                         try:
                             data = response.json()
                         except Exception as je:
-                            logger.warning(f"[{tag}] CMS JSON parse error: {je!r}; retry in {backoff:.1f}s")
+                            logger.warning(f"{reg_id}: [{tag}] CMS JSON parse error: {je!r}; retry in {backoff:.1f}s")
                             time.sleep(backoff)
                             backoff = min(backoff * 1.5, 10.0)
                             continue
 
                         if data.get("result") == 24:
-                            logger.debug(f"[{tag}] CMS busy (24); retry in {backoff:.1f}s")
+                            logger.debug(f"{reg_id}: [{tag}] CMS busy (24); retry in {backoff:.1f}s")
                             time.sleep(backoff)
                             backoff = min(backoff * 1.5, 10.0)
                             continue
@@ -1564,7 +1574,7 @@ def cms_data_get_decorator(tag: str = "execute func"):
                         return response
 
                     except REQUESTS_ERRORS as err:
-                        logger.warning(f"[{tag}] Connection problem with CMS: {_exc_details(err)}; retry in {backoff:.1f}s")
+                        logger.warning(f"{reg_id}: [{tag}] Connection problem with CMS: {_exc_details(err)}; retry in {backoff:.1f}s")
                         # logger.debug("stack:", exc_info=True)
                         time.sleep(backoff)
                         backoff = min(backoff * 1.5, 10.0)

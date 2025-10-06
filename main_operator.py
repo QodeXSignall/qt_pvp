@@ -111,17 +111,17 @@ class Main:
                                   start_time=None, end_time=None,
                                   by_trigger=False, proc=False,
                                   split: int = None):
-        logger.debug(f"Начинаем работу с устройством {reg_id}")
+        logger.debug(f"{reg_id}. Начинаем работу с устройством.")
         begin_time = datetime.datetime.now()
 
         # Информация о регистраторе
         reg_info = main_funcs.get_reg_info(reg_id) or main_funcs.create_new_reg(reg_id, plate)
-        logger.debug(f"Информация о регистраторе {reg_id} - {reg_info}")
+        logger.debug(f"{reg_id}. Информация о регистраторе: {reg_info}.")
         chanel_id = reg_info.get("chanel_id", 0)  # Если нет ID канала, ставим 0
 
         ignore = reg_info.get("ignore", False)
         if ignore:
-            logger.debug(f"Игнорируем регистратор {reg_id}")
+            logger.debug(f"{reg_id}. Игнорируем регистратор, поскольку в states.json параметр ignore=true.")
             return
 
         # Временные границы окна
@@ -135,7 +135,6 @@ class Main:
                 datetime.datetime.strptime(start_time, TIME_FMT)
         ).total_seconds()
 
-        """
         max_span = settings.config.getint("Interests", "DOWNLOADING_INTERVAL") * 60
         if time_difference > max_span:
             end_time = (
@@ -145,15 +144,14 @@ class Main:
         else:
             logger.debug(f"f{reg_id}. Time difference is too short ({time_difference} сек.)")
             return
-        """
 
-        max_span = settings.config.getint("Interests", "DOWNLOADING_INTERVAL") * 60
-        if time_difference <= 0:
-            logger.debug(f"{reg_id}. Пустое окно ({time_difference} сек.).")
-            return
-        if time_difference > max_span:
-            end_time = (datetime.datetime.strptime(start_time, TIME_FMT) +
-                        datetime.timedelta(seconds=max_span)).strftime(TIME_FMT)
+        #max_span = settings.config.getint("Interests", "DOWNLOADING_INTERVAL") * 60
+        #if time_difference <= 0:
+        #    logger.debug(f"{reg_id}. Пустое окно ({time_difference} сек.).")
+        #    return
+        #if time_difference > max_span:
+        #    end_time = (datetime.datetime.strptime(start_time, TIME_FMT) +
+        #                datetime.timedelta(seconds=max_span)).strftime(TIME_FMT)
         # иначе оставляем end_time как есть и работаем с «коротким» окном
 
 
@@ -200,7 +198,6 @@ class Main:
                         # Важно: всё равно вернём end_time, чтобы батч мог продвинуть last_upload_time вперёд
                         return interest["end_time"]
 
-
                     cloud_uploader.upload_dict_as_json_to_cloud(
                         data=enriched["report"], remote_folder_path=interest["cloud_folder"]
                     )
@@ -239,7 +236,7 @@ class Main:
                     if et:
                         end_times.append(et)
                 except cms_api.DeviceOfflineError as err:
-                    logger.debug("Устройство оффлайн, прерываем обработку интересов.")
+                    logger.debug(f"{reg_id}. Устройство оффлайн, прерываем обработку интересов.")
 
                     # отменяем все остальные задачи
                     for t in tasks:
@@ -285,13 +282,13 @@ class Main:
         before_channels_to_download = [ch for ch, exists in zip(channels, before_exists) if not exists]
         after_channels_to_download = [ch for ch, exists in zip(channels, after_exists) if not exists]
 
-        logger.debug(f"Для скачивания определены кадры ДО - {before_channels_to_download}. "
+        logger.debug(f"{reg_id}: интерес {enriched['name']}. Для скачивания определены кадры ДО - {before_channels_to_download}. "
                      f"После - {after_channels_to_download}")
 
         frames_before: list[str] = []
         frames_after: list[str] = []
 
-        logger.debug("Получаем кадры ДО и ПОСЛЕ загрузки")
+        logger.debug(f"{reg_id}: интерес {enriched['name']}. Получаем кадры ДО и ПОСЛЕ загрузки")
 
         if before_channels_to_download:
             frames_before = await cms_api.get_frames(
@@ -301,9 +298,9 @@ class Main:
                 end_sec=enriched["photo_before_sec"] + 10,
                 channels=before_channels_to_download,
             )
-            logger.debug(f"Кадры ДО: {frames_before}")
+            logger.debug(f"{reg_id}: интерес {enriched['name']}. Кадры ДО: {frames_before}")
         else:
-            logger.info(f"Все фото ДО по интересу {enriched['name']} уже загружены на облако")
+            logger.info(f"{reg_id}: интерес {enriched['name']}. Все фото ДО по интересу уже загружены на облако")
 
         if after_channels_to_download:
             frames_after = await cms_api.get_frames(
@@ -313,9 +310,9 @@ class Main:
                 end_sec=enriched["photo_after_sec"] + 10,
                 channels=after_channels_to_download,
             )
-            logger.debug(f"Фото ПОСЛЕ: {frames_after}")
+            logger.debug(f"{reg_id}: интерес {enriched['name']}. Фото ПОСЛЕ: {frames_after}")
         else:
-            logger.info(f"Все фото ПОСЛЕ по интересу {enriched['name']} уже загружены на облако")
+            logger.info(f"{reg_id}: интерес {enriched['name']}. Все фото ПОСЛЕ по интересу уже загружены на облако")
 
         upload_status = await asyncio.to_thread(
             cloud_uploader.create_pics,
@@ -349,7 +346,7 @@ class Main:
         file_paths = interest.get("file_paths", [])
         if not file_paths:
             logger.warning(
-                f"{reg_id}: Нет видеофайлов для {interest_name}. Пропускаем.")
+                f"{reg_id}: Нет видео для {interest_name}. Пропускаем.")
             return
 
         video_task = asyncio.create_task(
@@ -361,7 +358,7 @@ class Main:
         result = await video_task
 
         if "error" in result:
-            logger.error(result["error"])
+            logger.error(f"{reg_id}. Ошибка при обработке видео интереса {interest_name}:  {result["error"]}")
             return
         if not result["output_video_path"]:
             logger.warning(
@@ -370,17 +367,17 @@ class Main:
 
         # Загружаем видео
         logger.info(
-            f"{reg_id}: Загружаем видео {interest_name} в облако.")
+            f"{reg_id}: Загружаем видео интереса {interest_name} в облако.")
         upload_status = await asyncio.to_thread(
             cloud_uploader.upload_file, result["output_video_path"],
             interest["cloud_folder"]
         )
 
         if upload_status:
-            logger.info(f"{reg_id}: Загрузка прошла успешно.")
+            logger.info(f"{reg_id}: Загрузка видео интереса {interest_name} прошла успешно.")
             if settings.config.getboolean("General", "del_source_video_after_upload"):
                 if os.path.exists(result["output_video_path"]):
-                    logger.info(f"{reg_id}: Удаляем локальный файл ({result['output_video_path']}).")
+                    logger.info(f"{reg_id}: Удаляем локальное видео интереса {interest_name}. ({result['output_video_path']}).")
                     os.remove(result["output_video_path"])
                     for file_path in result["files_to_delete"]:
                         if os.path.exists(file_path):
@@ -389,7 +386,7 @@ class Main:
                 interest_temp_folder = os.path.join(settings.TEMP_FOLDER,
                                            interest_name)
                 if os.path.exists(interest_temp_folder):
-                    logger.info(f"{reg_id}: Удаляем временную директорию интереса.")
+                    logger.info(f"{reg_id}: Удаляем временную директорию интереса {interest_name}. ({interest_temp_folder}).")
                     shutil.rmtree(interest_temp_folder)
         else:
             logger.error(f"{reg_id}: Ошибка загрузки {interest_name}.")

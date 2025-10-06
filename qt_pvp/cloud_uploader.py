@@ -94,28 +94,20 @@ def _download_file_safe(client, remote_path: str, local_path: str) -> bool:
     Сначала стандартный download_sync.
     При KeyError('content-length') — raw GET через client.session с явной auth.
     """
-    try:
-        client.download_sync(remote_path=remote_path, local_path=local_path)
-        return True
-    except KeyError as e:
-        if str(e).strip("'\"").lower() != "content-length":
-            raise
-        logger.warning(f"[REPORTS] Нет Content-Length у {remote_path}; fallback на raw GET")
+    full_url = _build_full_url(client, remote_path)
+    sess = getattr(client, "session", None)
+    if sess is None:
+        raise RuntimeError("WebDAV client has no 'session' to perform raw GET fallback")
 
-        full_url = _build_full_url(client, remote_path)
-        sess = getattr(client, "session", None)
-        if sess is None:
-            raise RuntimeError("WebDAV client has no 'session' to perform raw GET fallback")
-
-        auth = _resolve_auth(client)  # ← ключевое: даём креды явно
-        os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
-        with sess.get(full_url, stream=True, allow_redirects=True, auth=auth) as resp:
-            resp.raise_for_status()
-            with open(local_path, "wb") as f:
-                for chunk in resp.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-        return True
+    auth = _resolve_auth(client)  # ← ключевое: даём креды явно
+    os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
+    with sess.get(full_url, stream=True, allow_redirects=True, auth=auth) as resp:
+        resp.raise_for_status()
+        with open(local_path, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+    return True
 
 
 def append_report_line_to_cloud(

@@ -11,7 +11,7 @@ def get_cms_async_client() -> httpx.AsyncClient:
                 max_connections=32,
                 max_keepalive_connections=16,
             ),
-            timeout=Timeout(60.0, connect=5.0),
+            timeout=Timeout(360.0, connect=5.0),
             headers={"User-Agent": "qt_pvp/1.0", "Connection": "close"},
             http2=False,
         )
