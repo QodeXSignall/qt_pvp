@@ -323,7 +323,7 @@ async def _frames_for_channel(jsession, reg_id: str,
 
     # Извлекаем параллельно, но под FRAME семафором внутри extract_first_frame
     extract_tasks = [
-        asyncio.create_task(extract_first_frame(vp, channel_id=channel_id))
+        asyncio.create_task(extract_first_frame(vp, channel_id=channel_id, reg_id=reg_id))
         for vp in videos_paths
     ]
     for t in asyncio.as_completed(extract_tasks):
@@ -364,9 +364,10 @@ def _extract_first_frame_sync(video_path: str,
                               output_dir: str = settings.FRAMES_TEMP_FOLDER,
                               max_retries: int = 3,
                               min_file_size_kb: int = 10,
-                              channel_id: int = 0):
+                              channel_id: int = 0,
+                              reg_id: str = "") -> List[str]:
     if not os.path.exists(video_path) or (os.path.getsize(video_path) / 1024) < min_file_size_kb:
-        logger.error(f"Файл слишком маленький или не найден: {video_path}")
+        logger.error(f"{reg_id}. Channel {channel_id}. Файл слишком маленький или не найден: {video_path}")
         return None
 
     cap = None
@@ -374,11 +375,11 @@ def _extract_first_frame_sync(video_path: str,
         cap = cv2.VideoCapture(video_path)
         if cap.isOpened():
             break
-        logger.warning(f"Попытка {attempt + 1}: Не удалось открыть видео: {video_path}")
+        logger.warning(f"{reg_id}. Попытка {attempt + 1}: Не удалось открыть видео: {video_path}")
         time.sleep(1)
 
     if not cap or not cap.isOpened():
-        logger.error(f"Не удалось открыть видео после {max_retries} попыток: {video_path}")
+        logger.error(f"{reg_id}. Не удалось открыть видео после {max_retries} попыток: {video_path}")
         return None
 
     os.makedirs(output_dir, exist_ok=True)
@@ -391,22 +392,23 @@ def _extract_first_frame_sync(video_path: str,
     if success and frame is not None:
         ok = cv2.imwrite(output_path, frame)
         if ok:
-            logger.info(f"Кадр успешно сохранён в: {output_path}")
+            logger.info(f"{reg_id}. Кадр успешно сохранён в: {output_path}")
             return output_path
-        logger.warning(f"cv2.imwrite вернул False: {output_path}")
+        logger.warning(f"{reg_id}. cv2.imwrite вернул False: {output_path}")
     else:
-        logger.warning("Не удалось прочитать кадр из видео.")
+        logger.warning("{reg_id}.Не удалось прочитать кадр из видео.")
     return None
 
 async def extract_first_frame(video_path: str,
                               output_dir: str = settings.FRAMES_TEMP_FOLDER,
                               max_retries: int = 3,
                               min_file_size_kb: int = 10,
-                              channel_id: int = 0):
+                              channel_id: int = 0,
+                              reg_id: str = ""):
     async with limits.get_frame_sem():
         return await asyncio.to_thread(
             _extract_first_frame_sync,
-            video_path, output_dir, max_retries, min_file_size_kb, channel_id
+            video_path, output_dir, max_retries, min_file_size_kb, channel_id, reg_id
         )
 
 def _create_placeholder_image(output_dir: str):
