@@ -65,9 +65,9 @@ async def get_video(jsession, device_id: str, start_time_seconds: int,
     url = f"{settings.cms_host}/StandardApiAction_getVideoFileInfo.action"
 
     async with limits.get_cms_global_sem():
-        async with limits.get_device_sem(device_id):
-            client = cms_http.get_cms_async_client()
-            return await client.get(url, params=params)
+        #async with limits.get_device_sem(device_id):
+        client = cms_http.get_cms_async_client()
+        return await client.get(url, params=params)
 
 
 
@@ -442,9 +442,20 @@ async def download_video(
     end_sec: int,
     adjustment_sequence: Iterable[int] = (0, 30, 60, 90),
 ):
-    start_limit, end_limit = 0, 24*60*60 - 1
+    """
+    Правка: при result=22 ('device no response') НЕ двигаем окно.
+    Повторяем попытки на том же интервале с экспоненциальным backoff,
+    и только после исчерпания лимита переходим к следующему delta.
+    """
+    start_limit, end_limit = 0, 24 * 60 * 60 - 1
     base_start, base_end = int(start_sec), int(end_sec)
     file_paths: List[str] = []
+
+    # --- настройки повтора именно для result=22 ---
+    MAX_NO_RESPONSE_RETRIES = 5        # сколько раз пробуем то же окно
+    BACKOFF_START = 2.0                # секунд
+    BACKOFF_MULT = 1.5
+    BACKOFF_MAX = 15.0
 
     # превратим в список, чтобы можно было логировать длину
     adj = list(adjustment_sequence)
@@ -452,6 +463,7 @@ async def download_video(
         adj = [0] + adj  # гарантируем первую попытку без расширения
 
     for i, delta in enumerate(adj, start=1):
+        # вычисляем текущее окно; НЕ меняем base_* — только расширения по delta
         cur_start = max(start_limit, base_start - delta)
         cur_end   = min(end_limit,   base_end + delta)
 
@@ -460,51 +472,88 @@ async def download_video(
             f"(base=[{base_start}..{base_end}], Δ={delta})"
         )
 
-        for _ in range(2):  # до двух попыток на том же delta
-            async with _get_video_sem_for(reg_id):
-                response = await get_video(
-                    jsession, reg_id, cur_start, cur_end,
-                    year, month, day, channel_id
-                )
-            try:
-                response_json = response.json()
+        # Повторы НА ТОМ ЖЕ Δ при проблемах с ответом устройства
+        no_resp_attempt = 0
+        backoff = BACKOFF_START
+
+        while True:
+            # --- две попытки на том же delta просто на случай кривого JSON ---
+            for _ in range(2):
+                async with _get_video_sem_for(reg_id):
+                    response = await get_video(
+                        jsession, reg_id, cur_start, cur_end,
+                        year, month, day, channel_id
+                    )
+                try:
+                    response_json = response.json()
+                    break
+                except Exception as e:
+                    logger.warning(
+                        f"{reg_id}: JSON parse failed on window [{cur_start}..{cur_end}]: {e}; "
+                        f"retry same delta"
+                    )
+                    await asyncio.sleep(2)
+            else:
+                # обе попытки распарсить JSON не удались — это не 'device no response',
+                # двигаемся к следующему delta
                 break
-            except Exception as e:
-                logger.warning(f"{reg_id}: JSON parse failed on window [{cur_start}..{cur_end}]: {e}; retry same delta")
-                await asyncio.sleep(2)
-        else:
-            # обе попытки не удались — уходим к следующему delta
-            continue
 
-        result = response_json.get("result")
-        message = response_json.get("message", "")
-        files = response_json.get("files") or []
+            result = response_json.get("result")
+            message = response_json.get("message", "") or ""
+            files = response_json.get("files") or []
 
-        logger.debug(f"{reg_id}: get_video result={result}, msg={message!r}, files={len(files)}")
+            logger.debug(
+                f"{reg_id}: get_video result={result}, msg={message!r}, files={len(files)}"
+            )
 
+            # устройство реально офлайн — выходим вверх по стеку
+            if result == 32 and "Device is not online" in message:
+                logger.warning(f"{reg_id}: устройство офлайн")
+                raise DeviceOfflineError(message or "Device is not online!")
 
-        if result == 32 and "Device is not online" in message:
-            logger.warning(f"{reg_id}: устройство офлайн")
-            raise DeviceOfflineError(message or "Device is not online!")
+            # наш кейс: устройство «не ответило» — НЕ двигаем окно, повторяем то же
+            if result == 22 and "device no response" in message.lower():
+                if no_resp_attempt < MAX_NO_RESPONSE_RETRIES:
+                    logger.debug(
+                        f"{reg_id}: device no response — retry same window "
+                        f"[{cur_start}..{cur_end}] in {backoff:.1f}s "
+                        f"({no_resp_attempt+1}/{MAX_NO_RESPONSE_RETRIES})"
+                    )
+                    await asyncio.sleep(backoff)
+                    no_resp_attempt += 1
+                    backoff = min(BACKOFF_MAX, backoff * BACKOFF_MULT)
+                    continue  # ВАЖНО: остаёмся на том же delta, не расширяем окно
+                else:
+                    logger.warning(
+                        f"{reg_id}: device no response — exhausted retries on the SAME window "
+                        f"[{cur_start}..{cur_end}]; move to next delta"
+                    )
+                    # выходим из while -> перейдём к следующему delta
+                    break
 
-        if files:
-            for f in files:
-                url = f.get("DownTaskUrl")
-                if not url:
-                    logger.warning(f"{reg_id}: у файла нет DownTaskUrl: {f}")
-                    continue
-                file_path = await wait_and_get_dwn_url(jsession=jsession, download_task_url=url)
-                if file_path:
-                    file_paths.append(file_path)
-            return file_paths or None
+            # если пришли файлы — забираем и выходим
+            if files:
+                for f in files:
+                    url = f.get("DownTaskUrl")
+                    if not url:
+                        logger.warning(f"{reg_id}: у файла нет DownTaskUrl: {f}")
+                        continue
+                    file_path = await wait_and_get_dwn_url(jsession=jsession, download_task_url=url)
+                    if file_path:
+                        file_paths.append(file_path)
+                return file_paths or None
 
-        await asyncio.sleep(2)
+            # Иные случаи: нет файлов, другие коды и т.д. — не зацикливаемся на этом delta,
+            # выходим к следующему delta (расширяем окно по старой логике)
+            await asyncio.sleep(2)
+            break
 
     logger.warning(
         f"{reg_id}: файлы не найдены после {len(adj)} попыток. "
         f"Последнее окно было [{cur_start}..{cur_end}]"
     )
     return None
+
 
 
 
