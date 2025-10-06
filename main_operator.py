@@ -173,7 +173,7 @@ class Main:
         logger.info(f"{reg_id} Начало: {start_time}, Конец: {end_time}")
 
         # Определяем интересные интервалы
-        interests = await self.get_interests(reg_id, reg_info, start_time, end_time)
+        interests = await self.get_interests_async(reg_id, reg_info, start_time, end_time)
         if not interests:
             logger.info(f"{reg_id}: Интересы не найдены в интервале {start_time} - {end_time}")
             main_funcs.save_new_reg_last_upload_time(reg_id, end_time)
