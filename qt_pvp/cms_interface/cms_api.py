@@ -271,16 +271,12 @@ async def get_alarms_async(jsession: str, device_id: str, begin_time: str, end_t
 import aiohttp
 
 @functions.cms_data_get_decorator_async()
-async def execute_download_task(jsession, download_task_url: str, *args, **kwargs):
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(download_task_url,
-                                   params={"jsession": jsession}) as response:
-                response.raise_for_status()
-                return await response.json()
-    except aiohttp.ClientError as e:
-        logger.error(f"HTTP request failed: {e}")
-        return None
+async def execute_download_task(jsession, download_task_url: str, reg_id):
+    params={"jsession": jsession}
+    async with limits.get_cms_global_sem():
+        async with limits.get_device_sem(reg_id):
+            client = cms_http.get_cms_async_client()
+            return await client.get(download_task_url, params=params)
 
 
 async def wait_and_get_dwn_url(jsession, download_task_url, reg_id, poll_interval=1.0, timeout=1800.0):
