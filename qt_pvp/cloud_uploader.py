@@ -39,8 +39,8 @@ def upload_bytes_to_cloud(client, data: bytes, remote_path: str, content_type: s
             if 200 <= resp.status_code < 300:
                 logger.info(f"[PUT BYTES] {remote_path}: OK ({len(data)} bytes)")
                 try:
-                    _invalidate_folder(parent)
-                    asyncio.create_task(meta_cache.invalidate(_cache_key_check(remote_path)))
+                    invalidate_folder_now(parent, meta_cache)
+                    invalidate_path_now(remote_path, meta_cache)
                 except Exception:
                     pass
                 return True
@@ -61,7 +61,7 @@ async def upload_many_bytes_async(items: list[tuple[str, bytes]], destination_fo
     items: список кортежей (filename, bytes). Грузит параллельно, без временных файлов.
     """
     if not items:
-        _invalidate_folder(destination_folder)
+        await ainvalidate_folder(destination_folder, meta_cache)
         return True
 
     sem = asyncio.Semaphore(concurrency)
@@ -74,7 +74,8 @@ async def upload_many_bytes_async(items: list[tuple[str, bytes]], destination_fo
             return await asyncio.to_thread(upload_bytes_to_cloud, client, data, remote_path, content_type)
 
     ok_list = await asyncio.gather(*(one(n, d) for (n, d) in items), return_exceptions=False)
-    _invalidate_folder(destination_folder)
+    await ainvalidate_folder(destination_folder, meta_cache)
+
     return all(ok_list)
 
 
@@ -280,11 +281,8 @@ def append_report_line_to_cloud(remote_folder_path: str, created_start_time: str
         ok = upload_bytes_to_cloud(client, to_upload, remote_file_path, content_type="text/plain; charset=utf-8")
         if ok:
             logger.info(f"[REPORTS] Обновлён {remote_file_path}")
-            try:
-                _invalidate_folder(remote_folder_path)
-                asyncio.create_task(meta_cache.invalidate(_cache_key_check(remote_file_path)))
-            except Exception:
-                pass
+            invalidate_folder_now(remote_folder_path, meta_cache)
+            invalidate_path_now(remote_file_path, meta_cache)
         return ok
 
     except Exception as e:
@@ -341,14 +339,46 @@ async def _frame_exists_cloud_async(folder: str, channel_id: int) -> bool:
         # в случае ошибки не кэшируем False, пусть повторит
         return False
 
-def _invalidate_folder(folder: str):
-    # чистим листинг папки + check для её файлов
-    prefix = f"dav:list:{folder.rstrip('/')}/"
-    # и общий check префикс (грубовато, но эффективно)
-    check_prefix = f"dav:check:{folder.rstrip('/')}/"
-    # fire-and-forget
-    asyncio.create_task(meta_cache.invalidate_prefix(prefix))
-    asyncio.create_task(meta_cache.invalidate_prefix(check_prefix))
+
+async def ainvalidate_folder(folder: str, meta_cache) -> None:
+    """
+    Асинхронно и детерминированно инвалидирует кэш листинга и проверок существования для папки.
+    Должна вызываться только из async-кода: await ainvalidate_folder(...).
+    """
+    base = folder.rstrip('/') + '/'
+    list_prefix = f"dav:list:{base}"
+    check_prefix = f"dav:check:{base}"
+    # гарантированно дождёмся очистки кэша
+    await meta_cache.invalidate_prefix(list_prefix)
+    await meta_cache.invalidate_prefix(check_prefix)
+
+async def ainvalidate_path(path: str, meta_cache) -> None:
+    await meta_cache.invalidate(_cache_key_check(path))
+
+def invalidate_path_now(path: str, meta_cache) -> None:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(ainvalidate_path(path, meta_cache))
+    else:
+        raise RuntimeError("invalidate_path_now() вызвана внутри активного event loop. "
+                           "В async-коде используйте: await ainvalidate_path(...).")
+
+def invalidate_folder_now(folder: str, meta_cache) -> None:
+    """
+    Синхронная версия: блокирующе *дожидается* очистки кэша.
+    Нельзя вызывать внутри уже работающего event loop (внутри async-кода).
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        # цикла нет — безопасно выполнить до конца
+        asyncio.run(ainvalidate_folder(folder, meta_cache))
+    else:
+        # мы внутри уже запущенного event loop — в sync-функции блокироваться нельзя
+        # чтобы избежать дедлоков/предсказуемо упасть:
+        raise RuntimeError("invalidate_folder_now() вызвана внутри активного event loop. "
+                           "В async-коде используйте: await ainvalidate_folder(...).")
 
 
 def create_folder_if_not_exists(client, folder_path):
@@ -363,11 +393,8 @@ def create_folder_if_not_exists(client, folder_path):
         while count < 2:
             try:
                 client.mkdir(folder_path)
-                try:
-                    _invalidate_folder(posixpath.dirname(folder_path))
-                    asyncio.create_task(meta_cache.invalidate(_cache_key_check(folder_path)))
-                except Exception:
-                    pass
+                invalidate_folder_now(posixpath.dirname(folder_path), meta_cache)
+                invalidate_path_now(folder_path, meta_cache)
                 return True
             except Exception as e:
                 logger.warning(
@@ -393,11 +420,8 @@ def upload_file_to_cloud(client, local_file_path, remote_path, retries=4, base_d
         try:
             client.upload_sync(remote_path=remote_path, local_path=local_file_path)
             logger.info(f"Файл {local_file_path} → {remote_path}: OK")
-            try:
-                _invalidate_folder(posixpath.dirname(remote_path))
-                asyncio.create_task(meta_cache.invalidate(_cache_key_check(remote_path)))
-            except Exception:
-                pass
+            invalidate_folder_now(posixpath.dirname(remote_path), meta_cache)
+            invalidate_path_now(remote_path, meta_cache)
             return True
         except Exception as e:
             # 4xx (кроме 429) смысла ретраить мало; webdav3, увы, не всегда даёт код.
@@ -479,7 +503,7 @@ async def upload_pics_async(pics, destinaton_folder, concurrency=6) -> bool:
     Возвращает True, если все (или пустой список) прошли успешно.
     """
     if not pics:
-        _invalidate_folder(destinaton_folder)
+        await ainvalidate_folder(destinaton_folder, meta_cache)
         return True
 
     sem = asyncio.Semaphore(concurrency)
@@ -496,7 +520,7 @@ async def upload_pics_async(pics, destinaton_folder, concurrency=6) -> bool:
 
     results = await asyncio.gather(*(one(p) for p in pics), return_exceptions=False)
     # после пачки — гарантированная инвалидация папки
-    _invalidate_folder(destinaton_folder)
+    await ainvalidate_folder(destinaton_folder, meta_cache)
     return all(results)
 
 async def create_pics_async(before_frames, after_frames, before_folder, after_folder) -> bool:
@@ -540,11 +564,8 @@ def upload_dict_as_json_to_cloud(data: dict, remote_folder_path: str,
             delete_local_file(local_file_path)
         logger.info("Отчет успешно выгружен")
         if success:
-            try:
-                _invalidate_folder(remote_folder_path)
-                asyncio.create_task(meta_cache.invalidate(_cache_key_check(remote_file_path)))
-            except Exception:
-                pass
+            invalidate_folder_now(remote_folder_path, meta_cache)
+            invalidate_path_now(remote_file_path, meta_cache)
         return success
 
     except Exception as e:
