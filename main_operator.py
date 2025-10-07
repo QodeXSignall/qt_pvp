@@ -412,7 +412,8 @@ class Main:
     async def mainloop(self):
         logger.info("Mainloop has been launched with success.")
         self._running: set[asyncio.Task] = set()
-        self.jsession = await cms_api.login().json()["jsession"]
+        login_result = await cms_api.login()
+        self.jsession = login_result.json()["jsession"]
 
         while True:
             # важно: get_devices_online в thread, чтобы не блокировать loop
