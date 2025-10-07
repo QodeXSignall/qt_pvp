@@ -106,6 +106,8 @@ def concatenate_videos(converted_files, output_abs_name):
         os.makedirs(os.path.dirname(output_abs_name), exist_ok=True)
         shutil.copyfile(src, output_abs_name)
         logger.debug(f"[CONCAT] Единственный файл — скопирован: {src} -> {output_abs_name}")
+        logger.debug(f"Удаляем исходный файл ({src})")
+        os.remove(src)
         return
 
     # стандартная concat через ffmpeg

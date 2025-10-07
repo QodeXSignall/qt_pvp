@@ -1,57 +1,77 @@
+from typing import Iterable, List, Dict, Tuple
 from qt_pvp.cms_interface import functions
 from qt_pvp import functions as core_funcs
-from requests.adapters import HTTPAdapter
 from qt_pvp.cms_interface import cms_http
 from qt_pvp.cms_interface import limits
-from urllib3.util.retry import Retry
-from typing import List, Dict, Tuple
 from qt_pvp.logger import logger
 from qt_pvp import settings
-import numpy as np
+from httpx import Response
+import subprocess
 import datetime
-import requests
-import aiohttp
 import asyncio
+import shutil
 import uuid
 import time
-import cv2
 import os
+
+
+def _ffmpeg_available() -> bool:
+    return shutil.which("ffmpeg") is not None
+
+def _grab_frame_ffmpeg(input_path: str, output_path: str, mode: str) -> bool:
+    """
+    mode: 'first' | 'last'
+    - 'first': первый кадр (быстро, без полного декодирования)
+    - 'last' : последний кадр через -sseof -1
+    """
+    if mode == "first":
+        cmd = [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-ss", "0", "-i", input_path,
+            "-frames:v", "1",
+            output_path
+        ]
+    elif mode == "last":
+        cmd = [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-sseof", "-1", "-i", input_path,
+            "-frames:v", "1",
+            output_path
+        ]
+    else:
+        raise ValueError("mode must be 'first' or 'last'")
+
+    # Без shell=True — безопаснее и стабильнее на Windows/Linux
+    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return res.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0
 
 
 class DeviceOfflineError(RuntimeError):
     """CMS: устройство офлайн — нужно отложить обработку интереса и попробовать позже."""
     pass
 
-
-# глобальный словарь семафоров по девайсам
-_GET_VIDEO_LOCKS = {}
-def _get_video_sem_for(dev_id: str) -> asyncio.Semaphore:
-    sem = _GET_VIDEO_LOCKS.get(dev_id)
-    if sem is None:
-        sem = asyncio.Semaphore(settings.config.getint("Process", "MAX_DOWNLOADS_PER_DEVICE"))
-        _GET_VIDEO_LOCKS[dev_id] = sem
-    return sem
-
-
-@functions.cms_data_get_decorator()
-def get_online_devices(jsession, device_id=None):
-    return requests.get(
-        f"{settings.cms_host}/StandardApiAction_getDeviceOlStatus.action?",
-        params={"jsession": jsession,
-                "status": 1,
-                "devIdno": device_id})
+@functions.cms_data_get_decorator_async()
+async def get_online_devices(jsession, device_id=None):
+    url = f"{settings.cms_host}/StandardApiAction_getDeviceOlStatus.action?"
+    params = {"jsession": jsession,
+              "status": 1,
+              "devIdno": device_id}
+    async with limits.get_cms_global_sem():
+        client = cms_http.get_cms_async_client()
+        return await client.get(url, params=params)
 
 
-@functions.cms_data_get_decorator()
-def login():
-    data = requests.get(
-        f"{settings.cms_host}/StandardApiAction_login.action?",
-        params={"account": settings.cms_login,
-                "password": settings.cms_password})
-    return data
+@functions.cms_data_get_decorator_async()
+async def login():
+    url = f"{settings.cms_host}/StandardApiAction_login.action?"
+    params = {"account": settings.cms_login,
+                "password": settings.cms_password}
+    async with limits.get_cms_global_sem():
+        client = cms_http.get_cms_async_client()
+        return await client.get(url, params=params)
 
 
-@functions.cms_data_get_decorator(tag="get_video")
+@functions.cms_data_get_decorator_async()
 async def get_video(jsession, device_id: str, start_time_seconds: int,
                     end_time_seconds: int, year: int, month: int, day: int,
                     channel_id: int = 0, fileattr: int = 2):
@@ -66,74 +86,32 @@ async def get_video(jsession, device_id: str, start_time_seconds: int,
     url = f"{settings.cms_host}/StandardApiAction_getVideoFileInfo.action"
 
     async with limits.get_cms_global_sem():
-        #async with limits.get_device_sem(device_id):
-        client = cms_http.get_cms_async_client()
-        return await client.get(url, params=params)
+        async with limits.get_device_sem(device_id):
+            client = cms_http.get_cms_async_client()
+            return await client.get(url, params=params)
 
 
-
-async def fetch_photo_url(data_list, chn_values):
-    """
-    Функция для получения пути к фото (dph) по заданным значениям chn.
-    Работает только с самыми последними (свежими) записями для каждого chn.
-
-    :param data_list: Список словарей с данными (уже отсортированный, свежие записи идут последними).
-    :param chn_values: Список значений chn, которые нужно обработать.
-    :return: Словарь с результатами, где ключ — chn, значение — путь к фото (dph).
-    """
-    # Собираем последние записи для каждого chn
-    latest_items = {}
-    for item in data_list:
-        chn = item.get('chn')
-        if chn in chn_values:
-            # Просто перезаписываем значение для каждого chn
-            latest_items[chn] = item
-
-    results = {}
-    async with aiohttp.ClientSession() as session:
-        for chn, item in latest_items.items():
-            down_task_url = item.get('DownTaskUrl')
-            # Отправляем GET-запрос и ждем ответа
-            while True:
-                async with session.get(down_task_url) as response:
-                    data = await response.json()
-                    # Проверяем, появилось ли значение dph
-                    if data.get("oldTaskReal", {}).get("dph") is not None:
-                        results[chn] = data["oldTaskReal"]["dph"]
-                        break
-                    # Если dph еще не появился, ждем некоторое время
-                    await asyncio.sleep(1)  # Интервал проверки — 1 секунда
-
-    return results
+@functions.cms_data_get_decorator_async()
+async def get_device_track_page_async(jsession: str, device_id: str,
+                                      start_time: str, end_time: str,
+                                      page: int | None = None) -> cms_http.httpx.Response:
+    params = {
+        "jsession": jsession,
+        "devIdno": device_id,
+        "begintime": start_time,
+        "endtime": end_time,
+    }
+    if page is not None:
+        params["currentPage"] = page
+    url = f"{settings.cms_host}/StandardApiAction_queryTrackDetail.action"
+    async with limits.get_cms_global_sem():
+        async with limits.get_device_sem(device_id):
+            client = cms_http.get_cms_async_client()
+            return await client.get(url, params=params)
 
 
-def get_alarms(jsession, reg_id, begin_time, end_time):
-    url = f"{settings.cms_host}/StandardApiAction_queryAlarmDetail.action?"
-    print(url)
-    params = {"jsession": jsession,
-              "devIdno": reg_id,
-              "begintime": begin_time,
-              # "begintime": to_timestamp(begin_time),
-              "endtime": end_time,
-              # "endtime": to_timestamp(end_time),
-              "armType": "19,20,69,70",
-              }
-    return requests.get(
-        url,
-        params=params
-    )
-
-
-@functions.cms_data_get_decorator()
-def get_gps(jsession):
-    response = requests.get(
-        f"{settings.cms_host}/StandardApiAction_getDeviceStatus.action?",
-        params={"jsession": jsession})
-    return response
-
-
-@functions.cms_data_get_decorator()
-def get_device_track(jsession: str, device_id: str, start_time: str,
+@functions.cms_data_get_decorator_async()
+async def get_device_track(jsession: str, device_id: str, start_time: str,
                      stop_time: str, page: int | None = None):
     params = {
         "jsession": jsession,
@@ -145,54 +123,19 @@ def get_device_track(jsession: str, device_id: str, start_time: str,
         params["currentPage"] = page  # только если есть
 
     url = f"{settings.cms_host}/StandardApiAction_queryTrackDetail.action"
-
-    # Ретраи на обрывы/502-504; идем без keep-alive
-    retry = Retry(
-        total=5, connect=3, read=3,
-        backoff_factor=0.5,
-        status_forcelist=[502, 503, 504],
-        allowed_methods=["GET"],
-        raise_on_status=False
-    )
-    adapter = HTTPAdapter(max_retries=retry)
-    sess = requests.Session()
-    sess.mount("http://", adapter)
-    sess.mount("https://", adapter)
-
-    headers = {
-        "User-Agent": "qt_pvp/1.0",
-        "Connection": "close",  # отключаем keep-alive
-    }
-
-    try:
-        response = sess.get(
-            url,
-            params=params,
-            headers=headers,
-            timeout=(5, 60)  # connect, read
-        )
-        response.raise_for_status()
-        return response
-    finally:
-        sess.close()
+    async with limits.get_cms_global_sem():
+        async with limits.get_device_sem(device_id):
+            client = cms_http.get_cms_async_client()
+            return await client.get(url, params=params)
 
 
-def get_device_status(jsession: str, device_id: str):
-    response = requests.get(
-        f"{settings.cms_host}/StandardApiAction_getDeviceStatus.action?",
-        params={"jsession": jsession,
-                "devIdno": device_id,
-                })
-    return response
-
-
-def get_device_track_all_pages(jsession: str, device_id: str, start_time: str,
+async def get_device_track_all_pages(jsession: str, device_id: str, start_time: str,
                                stop_time: str):
     total_pages = 2
     current_page = 1
     all_tracks = []
     while current_page < total_pages:
-        tracks = get_device_track(jsession, device_id, start_time, stop_time,
+        tracks = await get_device_track(jsession, device_id, start_time, stop_time,
                                   page=current_page)
         tracks_json = tracks.json()
         total_pages = tracks_json["pagination"]["totalPages"]
@@ -203,236 +146,81 @@ def get_device_track_all_pages(jsession: str, device_id: str, start_time: str,
     return all_tracks
 
 
+async def get_device_track_all_pages_async(jsession: str, device_id: str,
+                                           start_time: str, end_time: str) -> list[dict]:
+    # 1-ю страницу запрашиваем, чтобы понять пагинацию
+    first = await get_device_track_page_async(jsession, device_id, start_time, end_time, page=None)
+    first.raise_for_status()
+    data = first.json()
+    pages = int(data.get("pagination", {}).get("totalPages", 1)) or 1
+
+    results = [data]
+    if pages > 1:
+        # оставшиеся страницы — параллельно, но аккуратно лимитируем
+        tasks = [
+            get_device_track_page_async(jsession, device_id, start_time, end_time, page=p)
+            for p in range(2, pages + 1)
+        ]
+        others = await asyncio.gather(*tasks)
+        for r in others:
+            r.raise_for_status()
+            results.append(r.json())
+    return results
+
 @functions.cms_data_get_decorator_async()
-async def execute_download_task(jsession, download_task_url: str):
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(download_task_url,
-                                   params={"jsession": jsession}) as response:
-                response.raise_for_status()
-                return await response.json()
-    except aiohttp.ClientError as e:
-        logger.error(f"HTTP request failed: {e}")
-        return None
+async def get_device_status_async(jsession: str, device_id: str) -> Response:
+    url = f"{settings.cms_host}/StandardApiAction_getDeviceStatus.action"
+    params={"jsession": jsession, "devIdno": device_id}
+    async with limits.get_cms_global_sem():
+        client = cms_http.get_cms_async_client()
+        return await client.get(url, params=params)
+
+@functions.cms_data_get_decorator_async()
+async def get_alarms_async(jsession: str, device_id: str, begin_time: str, end_time: str) -> Response:
+    url = f"{settings.cms_host}/StandardApiAction_queryAlarmDetail.action"
+    params = {
+        "jsession": jsession,
+        "devIdno": device_id,
+        "begintime": begin_time,
+        "endtime": end_time,
+        "armType": "19,20,69,70",
+    }
+    async with limits.get_cms_global_sem():
+        client = cms_http.get_cms_async_client()
+        return await client.get(url, params=params)
+
+@functions.cms_data_get_decorator_async()
+async def execute_download_task(jsession, download_task_url: str, reg_id):
+    params={"jsession": jsession}
+    async with limits.get_cms_global_sem():
+        async with limits.get_device_sem(reg_id):
+            client = cms_http.get_cms_async_client()
+            return await client.get(download_task_url, params=params)
 
 
-async def wait_and_get_dwn_url(jsession, download_task_url):
-    logger.info("Downloading...")
+async def wait_and_get_dwn_url(jsession, download_task_url, reg_id):
+    logger.info(f"{reg_id}. Загрузка видео...")
     count = 0
     while True:
-        response_json = await execute_download_task(jsession=jsession, download_task_url=download_task_url)
+        response_json = await execute_download_task(jsession=jsession, download_task_url=download_task_url, reg_id=reg_id)
         if not response_json:
             await asyncio.sleep(1)
             continue
         result = response_json["result"]
         if result == 11 and response_json["oldTaskAll"] and  response_json["oldTaskAll"]["dph"]:
-            logger.info(f"{response_json['oldTaskAll']['id']}. Download done!")
+            logger.info(f"{reg_id}. Загрузка видео завершена!")
             logger.debug(
                 f'Get path: {str(response_json["oldTaskAll"]["dph"])}')
             return response_json["oldTaskAll"]["dph"]
         elif result == 32:
-            logger.warning(f"Device is offline! {result}")
+            logger.warning(f"{reg_id}. Устройство отключено! {result}")
             raise DeviceOfflineError
             #return {"error": "Device is offline!"}
         else:
             count += 1
             await asyncio.sleep(1)
             if count % 60 == 0:
-                logger.info(f"Still downloading. Response {response_json}. Waiting {count} seconds...")
-
-
-
-def _time_to_sec(dt: datetime.datetime) -> int:
-    return dt.hour * 3600 + dt.minute * 60 + dt.second
-
-async def download_interest_videos(jsession, interest, chanel_id, reg_id,
-                                   adjustment_sequence=(0, 15, 30, 45)):
-    logger.info(f"f{reg_id}: Загружаем видео интереса {interest['name']}...")
-    TIME_FMT = "%Y-%m-%d %H:%M:%S"
-
-    # ВСЕГДА пересчитываем секунды из строковых времен
-    dt_start = datetime.datetime.strptime(interest["start_time"], TIME_FMT)
-    dt_end   = datetime.datetime.strptime(interest["end_time"],   TIME_FMT)
-
-    start_sec = _time_to_sec(dt_start)
-    end_sec   = _time_to_sec(dt_end)
-
-    file_paths = await download_video(
-        jsession=jsession,
-        reg_id=reg_id,
-        channel_id=chanel_id,
-        year=dt_start.year,
-        month=dt_start.month,
-        day=dt_start.day,
-        start_sec=start_sec,
-        end_sec=end_sec,
-        adjustment_sequence=adjustment_sequence,   # стратегия ретраев ТУТ
-    )
-
-    if not file_paths:
-        logger.error(f"{reg_id}: Не удалось получить видеофайлы для интереса {interest['name']}")
-        return None
-
-    # не мутируем исходный словарь вне
-    out = interest.copy()
-    out["file_paths"] = file_paths
-    return out
-
-
-async def get_frames(jsession, reg_id: str,
-                     year: int, month: int, day: int,
-                     start_sec: int, end_sec: int,
-                     channels: list = [0, 1, 2, 3]) -> List[str]:
-    """
-    Для каждого канала параллельно пытаемся вытащить кадр(ы).
-    Ограничиваем одновременное число каналов семафором.
-    """
-    results: List[str] = []
-
-    async def guarded_channel(ch_id: int) -> List[str]:
-        #async with chan_sem:
-        return await _frames_for_channel(jsession, reg_id, ch_id, year, month, day, start_sec, end_sec)
-
-    tasks = [asyncio.create_task(guarded_channel(ch)) for ch in channels]
-    for t in asyncio.as_completed(tasks):
-        res = await t
-        if res:
-            results.extend(res)
-
-    return results
-
-async def _frames_for_channel(jsession, reg_id: str,
-                              channel_id: int,
-                              year: int, month: int, day: int,
-                              start_sec: int, end_sec: int) -> List[str]:
-    frames: List[str] = []
-    videos_paths = await download_video(
-        jsession=jsession,
-        reg_id=reg_id,
-        channel_id=channel_id,
-        year=year, month=month, day=day,
-        start_sec=start_sec,
-        end_sec=end_sec,
-        adjustment_sequence=(0, 1, 2, 3, 4, 5),
-    )
-
-    logger.debug(f"{reg_id}: Скачано видео для извлечения фото. ch={channel_id} -> files: {videos_paths}")
-
-    if not videos_paths:
-        await asyncio.sleep(0.2)
-        return frames
-
-    # Извлекаем параллельно, но под FRAME семафором внутри extract_first_frame
-    extract_tasks = [
-        asyncio.create_task(extract_first_frame(vp, channel_id=channel_id, reg_id=reg_id))
-        for vp in videos_paths
-    ]
-    for t in asyncio.as_completed(extract_tasks):
-        try:
-            fp = await t
-            if fp:
-                frames.append(fp)
-        except Exception as ex:
-            logger.exception(f"{reg_id}: ch={channel_id} extract error: {ex}")
-
-    return frames
-
-
-
-
-def log_no_image_event(reg_id: str, frame_path: str, context: str = "unknown"):
-    """
-    Логирует событие создания заглушки в отдельный файл.
-
-    :param reg_id: ID регистратора
-    :param frame_path: Путь к заглушке
-    :param context: Контекст - фото ДО, ПОСЛЕ и т.д.
-    """
-    NO_IMAGE_LOG_FILE = "no_image_events.log"
-
-    os.makedirs(os.path.dirname(NO_IMAGE_LOG_FILE) or ".", exist_ok=True)
-    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log_line = f"{now} | RegID: {reg_id} | Context: {context} | Placeholder: {frame_path}\n"
-
-    with open(NO_IMAGE_LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(log_line)
-
-    logger.info(f"NO IMAGE событие залогировано: {log_line.strip()}")
-
-
-
-def _extract_first_frame_sync(video_path: str,
-                              output_dir: str = settings.FRAMES_TEMP_FOLDER,
-                              max_retries: int = 3,
-                              min_file_size_kb: int = 10,
-                              channel_id: int = 0,
-                              reg_id: str = "") -> List[str]:
-    if not os.path.exists(video_path) or (os.path.getsize(video_path) / 1024) < min_file_size_kb:
-        logger.error(f"{reg_id}. Channel {channel_id}. Файл слишком маленький или не найден: {video_path}")
-        return None
-
-    cap = None
-    for attempt in range(max_retries):
-        cap = cv2.VideoCapture(video_path)
-        if cap.isOpened():
-            break
-        logger.warning(f"{reg_id}. Попытка {attempt + 1}: Не удалось открыть видео: {video_path}")
-        time.sleep(1)
-
-    if not cap or not cap.isOpened():
-        logger.error(f"{reg_id}. Не удалось открыть видео после {max_retries} попыток: {video_path}")
-        return None
-
-    os.makedirs(output_dir, exist_ok=True)
-    filename = f"{channel_id}_{uuid.uuid4().hex}.jpg"
-    output_path = os.path.join(output_dir, filename)
-
-    success, frame = cap.read()
-    cap.release()
-
-    if success and frame is not None:
-        ok = cv2.imwrite(output_path, frame)
-        if ok:
-            logger.info(f"{reg_id}. Кадр успешно сохранён в: {output_path}")
-            return output_path
-        logger.warning(f"{reg_id}. cv2.imwrite вернул False: {output_path}")
-    else:
-        logger.warning("{reg_id}.Не удалось прочитать кадр из видео.")
-    return None
-
-async def extract_first_frame(video_path: str,
-                              output_dir: str = settings.FRAMES_TEMP_FOLDER,
-                              max_retries: int = 3,
-                              min_file_size_kb: int = 10,
-                              channel_id: int = 0,
-                              reg_id: str = ""):
-    async with limits.get_frame_sem():
-        return await asyncio.to_thread(
-            _extract_first_frame_sync,
-            video_path, output_dir, max_retries, min_file_size_kb, channel_id, reg_id
-        )
-
-def _create_placeholder_image(output_dir: str):
-    """Создаёт заглушку — чёрное изображение с надписью NO IMAGE"""
-    os.makedirs(output_dir, exist_ok=True)
-
-    filename = f"{uuid.uuid4().hex}_placeholder.jpg"
-    output_path = os.path.join(output_dir, filename)
-
-    # Создаём чёрное изображение
-    img = np.zeros((720, 1280, 3), dtype=np.uint8)
-
-    # Пишем текст "NO IMAGE"
-    cv2.putText(img, "NO IMAGE", (400, 360),
-                cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 255, 255), 3, cv2.LINE_AA)
-
-    cv2.imwrite(output_path, img)
-    logger.warning(f"Создана заглушка: {output_path}")
-    return output_path
-
-
-import asyncio
-from typing import Iterable, List
+                logger.info(f"Загрузка все еще в процессе. Response {response_json}. Уже {count} секунд.")
 
 async def download_video(
     jsession,
@@ -482,7 +270,7 @@ async def download_video(
         while True:
             # --- две попытки на том же delta просто на случай кривого JSON ---
             for _ in range(2):
-                async with _get_video_sem_for(reg_id):
+                async with limits._get_video_sem_for(reg_id):
                     response = await get_video(
                         jsession, reg_id, cur_start, cur_end,
                         year, month, day, channel_id
@@ -545,7 +333,7 @@ async def download_video(
                     if not url:
                         logger.warning(f"{reg_id}: у файла нет DownTaskUrl: {f}")
                         continue
-                    file_path = await wait_and_get_dwn_url(jsession=jsession, download_task_url=url)
+                    file_path = await wait_and_get_dwn_url(jsession=jsession, download_task_url=url, reg_id=reg_id)
                     if file_path:
                         file_paths.append(file_path)
                 return file_paths or None
@@ -561,79 +349,6 @@ async def download_video(
     )
     return None
 
-
-
-
-
-
-
-def send_cmsv6_message(dev_idno: str, jsession: str, text: str,
-                       host: str = "82.146.45.88", port: int = 6603):
-    """
-    Отправляет текстовое сообщение на экран регистратора через CMSV6 API.
-
-    :param dev_idno: ID регистратора (например, "018270348452")
-    :param jsession: Ключ сессии CMSV6 (получается через login)
-    :param text: Текст, который должен появиться на экране регистратора
-    :param host: IP-адрес CMSV6 сервера
-    :param port: Порт CMSV6 сервера (обычно 6603)
-    """
-    url = f"http://{host}:{port}/2/74"
-    params = {
-        "Command": "33536",
-        "DevIDNO": dev_idno,
-        "toMap": "1",
-        "jsession": jsession
-    }
-    payload = {
-        "Flag": 20,
-        "TextInfo": text,
-        "TextType": 1,
-        "utf8": 1
-    }
-
-    response = requests.post(url, params=params, json=payload)
-
-    try:
-        result = response.json()
-    except Exception:
-        result = {"error": "Invalid response", "raw": response.text}
-
-    return result
-
-
-def get_dev_idno_by_plate(jsession: str, plate_number: str,
-                          host: str = "82.146.45.88", port: int = 8080):
-    """
-    Получает DevIDNO по гос.номеру автомобиля через CMSV6 API.
-
-    :param jsession: Ключ сессии CMSV6
-    :param plate_number: Гос.номер машины (например, "А123ВС102")
-    :param host: IP-адрес CMSV6 сервера
-    :param port: Порт CMSV6 API (обычно 8080)
-    :return: DevIDNO (str) или None
-    """
-    url = f"http://{host}:{port}/StandardApiAction_queryDevice.action"
-    params = {"jsession": jsession}
-
-    response = requests.get(url, params=params)
-    try:
-        print(response)
-        data = response.json()
-        print(data)
-        devices = data.get("devices", [])
-        for device in devices:
-            print(device)
-            if device.get("vehicleNumber", "").replace(" ",
-                                                       "").upper() == plate_number.replace(
-                " ", "").upper():
-                return device.get("devIdno")
-        return None
-    except Exception:
-        print("123")
-        return None
-
-# --- ДОБАВИТЬ В КОНЕЦ cms_api.py ---
 
 async def download_single_clip_per_channel(
     jsession: str,
@@ -697,7 +412,6 @@ async def download_single_clip_per_channel(
         out[ch] = path
     return out
 
-
 def _extract_edge_frames_sync(
     video_path: str,
     channel_id: int,
@@ -708,6 +422,7 @@ def _extract_edge_frames_sync(
     """
     Синхронно извлекает первый и последний кадр из видео.
     Возвращает (first_frame_path, last_frame_path).
+    Сначала пробует ffmpeg; если он недоступен или неудача — fallback на OpenCV.
     """
     if not video_path or not os.path.exists(video_path) or os.path.getsize(video_path) < 10 * 1024:
         logger.error(f"{reg_id}. ch={channel_id} плохой файл для кадров: {video_path}")
@@ -715,54 +430,84 @@ def _extract_edge_frames_sync(
 
     os.makedirs(output_dir, exist_ok=True)
 
+    # Итоговые пути
+    base = f"{reg_id}_ch{channel_id}_{uuid.uuid4().hex}"
+    first_path = os.path.join(output_dir, f"{base}_first.jpg")
+    last_path  = os.path.join(output_dir, f"{base}_last.jpg")
+
+    # --- Путь 1: ffmpeg (предпочтительный, быстрее/стабильнее для «крайних» кадров)
+    if _ffmpeg_available():
+        ok_first = _grab_frame_ffmpeg(video_path, first_path, mode="first")
+        ok_last  = _grab_frame_ffmpeg(video_path, last_path,  mode="last")
+
+        if ok_first and ok_last:
+            return first_path, last_path
+        else:
+            # подчистим неудачные файлы перед фоллбэком
+            if not ok_first and os.path.exists(first_path):
+                try: os.remove(first_path)
+                except: pass
+            if not ok_last and os.path.exists(last_path):
+                try: os.remove(last_path)
+                except: pass
+            logger.warning(f"{reg_id}. ch={channel_id} ffmpeg не справился, откатываемся на OpenCV")
+
+    # --- Путь 2: OpenCV (твой текущий код, но локально, без изменений внешнего API)
+    try:
+        import cv2  # локальный импорт, чтобы не тянуть cv2 если ffmpeg всё сделал
+    except Exception as e:
+        logger.error(f"{reg_id}. ch={channel_id} OpenCV недоступен: {e}")
+        return None, None
+
     cap = None
     for attempt in range(max_retries):
         cap = cv2.VideoCapture(video_path)
         if cap.isOpened():
             break
-        time.sleep(1)
+        logger.warning(f"{reg_id}. ch={channel_id} Попытка {attempt + 1}: Не удалось открыть видео: {video_path}")
+        time.sleep(0.2)
 
-    if not cap or not cap.isOpened():
-        logger.error(f"{reg_id}. ch={channel_id} VideoCapture fail: {video_path}")
+    if cap is None or not cap.isOpened():
+        logger.error(f"{reg_id}. ch={channel_id} Не удалось открыть видео: {video_path}")
         return None, None
 
-    # первый кадр
-    ok1, frame1 = cap.read()
-    first_path = None
-    if ok1 and frame1 is not None:
-        first_path = os.path.join(output_dir, f"{channel_id}_{uuid.uuid4().hex}_before.jpg")
-        cv2.imwrite(first_path, frame1)
-
-    # последний кадр
-    last_path = None
     try:
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
-        if total > 1:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, total - 1)
-            ok2, frame2 = cap.read()
-            if ok2 and frame2 is not None:
-                last_path = os.path.join(output_dir, f"{channel_id}_{uuid.uuid4().hex}_after.jpg")
-                cv2.imwrite(last_path, frame2)
+        # первый кадр
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        ret_first, frame_first = cap.read()
+        if ret_first and frame_first is not None:
+            import numpy as np
+            ok = cv2.imwrite(first_path, frame_first)
+            if not ok:
+                logger.warning(f"{reg_id}. ch={channel_id} cv2.imwrite вернул False: {first_path}")
+                first_path = None
         else:
-            # fallback: перемотка по времени на -200мс от конца
-            dur_ms = cap.get(cv2.CAP_PROP_POS_MSEC)
-            if dur_ms and dur_ms > 500:
-                cap.set(cv2.CAP_PROP_POS_MSEC, max(0, dur_ms - 200))
-                ok2, frame2 = cap.read()
-                if ok2 and frame2 is not None:
-                    last_path = os.path.join(output_dir, f"{channel_id}_{uuid.uuid4().hex}_after.jpg")
-                    cv2.imwrite(last_path, frame2)
-    finally:
-        cap.release()
+            first_path = None
 
-    # заглушки, если чего-то не вышло (логика заглушек уже есть)  :contentReference[oaicite:3]{index=3}
-    if not first_path:
-        first_path = _create_placeholder_image(output_dir)
-        log_no_image_event(reg_id, first_path, context=f"before_ch{channel_id}")  # :contentReference[oaicite:4]{index=4}
-    if not last_path:
-        last_path = _create_placeholder_image(output_dir)
-        log_no_image_event(reg_id, last_path, context=f"after_ch{channel_id}")   # :contentReference[oaicite:5]{index=5}
-    return first_path, last_path
+        # последний кадр
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        if total_frames > 0:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, max(total_frames - 1, 0))
+        ret_last, frame_last = cap.read()
+        if (not ret_last or frame_last is None) and total_frames > 1:
+            # иногда последний недоступен, пробуем предпоследний
+            cap.set(cv2.CAP_PROP_POS_FRAMES, max(total_frames - 2, 0))
+            ret_last, frame_last = cap.read()
+
+        if ret_last and frame_last is not None:
+            ok = cv2.imwrite(last_path, frame_last)
+            if not ok:
+                logger.warning(f"{reg_id}. ch={channel_id} cv2.imwrite вернул False: {last_path}")
+                last_path = None
+        else:
+            last_path = None
+
+        return first_path, last_path
+    finally:
+        try:
+            cap.release()
+        except:
+            pass
 
 
 async def extract_edge_frames_from_video(
@@ -802,24 +547,3 @@ def delete_videos_except(
             logger.warning(f"Не удалось удалить {p}: {e}")
     return removed
 
-# for interest in interests:
-#    get_interest_download_path(jsession, interest)
-
-
-# print(log_data)
-# if res["result"] == 32:
-#    pass
-# print(res)
-# files = res["files"]
-# file = files[0]
-# device_id = "104040"
-# print(file["DownTaskUrl"])
-# print("getting gps")
-# track = gps.json()["status"]
-# print(gps.json())
-# tracks = get_device_track_all_pages(jsession=jsession,
-# device_id=device_id,
-# start_time="2025-02-05 15:00:00",
-# stop_time="2025-02-05 16:00:00", )
-
-# interests = functions.analyze_tracks_get_interests(tracks)

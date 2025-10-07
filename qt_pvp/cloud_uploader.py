@@ -5,6 +5,7 @@ from qt_pvp import settings
 import traceback
 import posixpath
 import asyncio
+import random
 import json
 import time
 import uuid
@@ -232,8 +233,6 @@ def parse_filename(filename):
     date_str = main_parts[1]
     return reg_id, date_str
 
-# qt_pvp/cloud_uploader.py
-
 
 def get_interest_video_cloud_path(interest_name, dest_directory=settings.CLOUD_PATH):
     registr_folder, date_folder_path, interest_folder_path = get_interest_folder_path(interest_name, dest_directory)
@@ -262,7 +261,7 @@ def frame_exists_cloud(folder_path: str, channel_id: int) -> bool:
     :param channel_id: подстрока, которую ищем в названии файла
     :return: True если файл найден, False если нет или произошла ошибка
     """
-    create_folder_if_not_exists(client, folder_path)
+    #create_folder_if_not_exists(client, folder_path)
     try:
         # Получаем список содержимого папки
         count = 0
@@ -325,30 +324,28 @@ def create_folder_if_not_exists(client, folder_path):
         return False
 
 
-def upload_file_to_cloud(client, local_file_path, remote_path, retries=3, delay_sec=2):
+def upload_file_to_cloud(client, local_file_path, remote_path, retries=4, base_delay=0.8):
     """
-    Загрузка файла на WebDAV сервер в указанную папку с повторами при ошибке.
-
-    :param client: WebDAV клиент.
-    :param local_file_path: Путь к локальному файлу.
-    :param remote_path: Путь на сервере.
-    :param retries: Количество попыток.
-    :param delay_sec: Задержка между попытками.
-    :return: True если успех, иначе False.
+    Загрузка файла на WebDAV сервер в указанную папку с "слипучими" повторами.
+    Экспоненциальный backoff + jitter:
+      попытки: 1..retries, задержка = base_delay * (2**(attempt-1)) + rand[0..0.3]
+    Возвращает True при успехе, иначе False.
     """
     for attempt in range(1, retries + 1):
         try:
-            client.upload_sync(remote_path=remote_path,
-                               local_path=local_file_path)
-            logger.info(f"Файл {local_file_path} успешно загружен в {remote_path}.")
+            client.upload_sync(remote_path=remote_path, local_path=local_file_path)
+            logger.info(f"Файл {local_file_path} → {remote_path}: OK")
             return True
         except Exception as e:
-            logger.warning(f"Попытка {attempt} загрузки {local_file_path} не удалась: {e}")
-            if attempt < retries:
-                time.sleep(delay_sec)
-            else:
-                logger.error(f"Файл {local_file_path} не удалось загрузить после {retries} попыток.")
-    return False
+            # 4xx (кроме 429) смысла ретраить мало; webdav3, увы, не всегда даёт код.
+            # Поэтому просто делаем несколько попыток с растущей задержкой.
+            logger.warning(f"Upload fail {attempt}/{retries} for {local_file_path} → {remote_path}: {e}")
+            if attempt == retries:
+                logger.error(f"Файл {local_file_path} не удалось залить после {retries} попыток.")
+                return False
+            # экспонента + небольшой джиттер
+            sleep_for = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 0.3)
+            time.sleep(sleep_for)
 
 
 def delete_local_file(local_file_path):
@@ -357,9 +354,9 @@ def delete_local_file(local_file_path):
     """
     try:
         os.remove(local_file_path)
-        print(f"Локальный файл {local_file_path} удалён.")
+        logger.debug(f"Локальный файл {local_file_path} удалён.")
     except OSError as e:
-        print(f"Не удалось удалить локальный файл {local_file_path}: {e}")
+        logger.debug(f"Не удалось удалить локальный файл {local_file_path}: {e}")
 
 
 def get_interest_folder_path(interest_name, dest_directory):
@@ -407,33 +404,32 @@ def upload_file(file_path, interest_folder_path):
     success = upload_file_to_cloud(client, file_path, remote_path)
     return success
 
+async def _upload_one(photo_path, dest_folder):
+    if photo_path:
+        remote_path = posixpath.join(dest_folder, os.path.basename(photo_path))
+        ok = await asyncio.to_thread(upload_file_to_cloud, client, photo_path, remote_path)
+        if ok:
+            delete_local_file(photo_path)
 
-def create_pics(pics_before, pics_after, pics_before_folder, pics_after_folder):
-    ok_before = create_folder_if_not_exists(client, pics_before_folder)
-    ok_after  = create_folder_if_not_exists(client, pics_after_folder)
+async def upload_pics_async(pics, destinaton_folder, concurrency=6):
+    sem = asyncio.Semaphore(concurrency)
+    async def one(photo_path):
+        if not photo_path:
+            return
+        photo_name = os.path.basename(photo_path)
+        remote_path = posixpath.join(destinaton_folder, photo_name)
+        ok = await asyncio.to_thread(upload_file_to_cloud, client, photo_path, remote_path)
+        if ok:
+            delete_local_file(photo_path)
+    await asyncio.gather(*(one(p) for p in pics))
 
-    if pics_before and ok_before:
-        upload_pics(pics_before, pics_before_folder)
-    if pics_after and ok_after:
-        upload_pics(pics_after, pics_after_folder)
-
-
-
-def upload_pics(pics, destinaton_folder):
-    try:
-        for photo_path in pics:
-            if photo_path:  # Проверяем, что путь к фото не пустой
-                photo_name = os.path.basename(photo_path)
-                remote_path = posixpath.join(destinaton_folder,
-                                             photo_name)
-                upload_success = upload_file_to_cloud(client, photo_path,
-                                                      remote_path)
-                if upload_success:
-                    delete_local_file(photo_path)
-
-    except Exception as e:
-        print(f"Ошибка при загрузке фотографий: {e}")
-
+async def create_pics_async(pics_before, pics_after, before_folder, after_folder):
+    ok_before = create_folder_if_not_exists(client, before_folder)
+    ok_after  = create_folder_if_not_exists(client, after_folder)
+    if ok_before:
+        await upload_pics_async(pics_before, before_folder)
+    if ok_after:
+        await upload_pics_async(pics_after,  after_folder)
 
 def upload_dict_as_json_to_cloud(data: dict, remote_folder_path: str,
                                  filename: str = "report.json"):

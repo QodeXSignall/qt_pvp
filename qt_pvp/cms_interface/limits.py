@@ -50,3 +50,13 @@ def get_frame_sem() -> asyncio.Semaphore:
         max_frames = _safe_int("Process", "MAX_FRAME_EXTRACT", 4)
         _frame_sem = asyncio.BoundedSemaphore(max_frames)
     return _frame_sem
+
+
+# глобальный словарь семафоров по девайсам
+_GET_VIDEO_LOCKS = {}
+def _get_video_sem_for(dev_id: str) -> asyncio.Semaphore:
+    sem = _GET_VIDEO_LOCKS.get(dev_id)
+    if sem is None:
+        sem = asyncio.Semaphore(config.getint("Process", "MAX_DOWNLOADS_PER_DEVICE"))
+        _GET_VIDEO_LOCKS[dev_id] = sem
+    return sem

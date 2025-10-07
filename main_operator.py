@@ -31,10 +31,6 @@ class Main:
             self._per_device_sem[reg_id] = sem
         return sem
 
-    def video_ready_trigger(self, *args, **kwargs):
-        logger.info("Dummy trigger activated")
-        pass
-
     def get_devices_online(self):
         devices_online = cms_api.get_online_devices(self.jsession)
         devices_online = devices_online.json()["onlines"]
@@ -71,23 +67,10 @@ class Main:
         while True:
             start_time_dt = datetime.datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
 
-            # --- ВАЖНО: обе CMS-функции синхронные -> уводим в thread-пул ---
-            tracks = await asyncio.to_thread(
-                cms_api.get_device_track_all_pages,
-                self.jsession,
-                reg_id,
-                start_time,
-                stop_time
-            )
-
-            alarm_reports = await asyncio.to_thread(
-                cms_api_funcs.get_device_alarms,
-                self.jsession,
-                reg_id,  # dev_idno
-                None,  # vehi_idno
-                start_time,
-                stop_time
-            )
+            tracks_task = asyncio.create_task(cms_api.get_device_track_all_pages_async(
+                self.jsession, reg_id, start_time, stop_time))
+            alarms_task = asyncio.create_task(cms_api.get_alarms_async(self.jsession, reg_id, start_time, stop_time))
+            tracks, alarm_reports = await asyncio.gather(tracks_task, alarms_task)
 
             prepared = cms_api_funcs.prepare_alarms(
                 raw_alarms=alarm_reports.get("alarms", []),
@@ -159,16 +142,6 @@ class Main:
         else:
             logger.debug(f"f{reg_id}. Time difference is too short ({time_difference} сек.)")
             return
-
-        #max_span = settings.config.getint("Interests", "DOWNLOADING_INTERVAL") * 60
-        #if time_difference <= 0:
-        #    logger.debug(f"{reg_id}. Пустое окно ({time_difference} сек.).")
-        #    return
-        #if time_difference > max_span:
-        #    end_time = (datetime.datetime.strptime(start_time, TIME_FMT) +
-        #                datetime.timedelta(seconds=max_span)).strftime(TIME_FMT)
-        # иначе оставляем end_time как есть и работаем с «коротким» окном
-
 
         logger.info(f"{reg_id} Начало: {start_time}, Конец: {end_time}")
 
@@ -262,7 +235,7 @@ class Main:
 
                 # 6) извлекаем кадры из КАЖДОГО скачанного клипа и выгружаем их
                 if settings.config.getboolean("General", "pics_before_after"):
-                    upload_status = await self.process_frames_before_after_v2(
+                    upload_status = await self.process_frames_before_after(
                         reg_id, interest, channels_files_dict  # ← передаём словарь!!!
                     )
                     if upload_status["upload_status"]:
@@ -342,7 +315,7 @@ class Main:
         if end_times:
             new_last = max(end_times)
         else:
-            new_last = start_time  # конец окна?, чтобы не зациклиться на том же диапазоне
+            new_last = start_time  # Повторяем снова, пока не получим данные
         #main_funcs.save_new_reg_last_upload_time(reg_id, new_last)
         main_funcs.save_new_reg_last_upload_time(reg_id, new_last)
         logger.info(
@@ -365,14 +338,11 @@ class Main:
         after_channels_to_download = [ch for ch, exists in zip(channels, after_exists) if not exists]
         return before_channels_to_download, after_channels_to_download
 
-    # --- ДОБАВИТЬ В КЛАСС Main (main_operator.py) ---
-    async def process_frames_before_after_v2(self, reg_id: str, enriched: dict, videos_by_channel):
+    async def process_frames_before_after(self, reg_id: str, enriched: dict, videos_by_channel):
         """
         ВЕРСИЯ 2:
-        1) Скачиваем по ОДНОМУ клипу на канал, покрывающему [start_time; end_time]
-        2) Из каждого клипа берём первый и последний кадр
-        3) Заливаем в облако в before_pics / after_pics
-        4) Удаляем все локальные клипы, кроме выбранного канала (опционально)
+        1) Из каждого клипа берём первый и последний кадр
+        2) Заливаем в облако в before_pics / after_pics
         Возвращает: {"upload_status": bool, "frames_before": [...], "frames_after": [...]}
         """
         channels = [0, 1, 2, 3]
@@ -399,100 +369,10 @@ class Main:
                 frames_after.append(last_path)
 
         # 3) Заливка кадров в облако — та же функция, что и раньше  :contentReference[oaicite:7]{index=7}
-        upload_status = await asyncio.to_thread(
-            cloud_uploader.create_pics,
-            frames_before, frames_after, enriched["pics_before_folder"], enriched["pics_after_folder"]
-        )
+        upload_status = await cloud_uploader.create_pics_async(
+            frames_before, frames_after, enriched["pics_before_folder"], enriched["pics_after_folder"])
         return {"upload_status": upload_status, "frames_before": frames_before, "frames_after": frames_after}
 
-
-    async def process_frames_before_after(self, reg_id, enriched):
-        interest_folder_path = enriched["cloud_folder"]
-        before_channels_to_download, after_channels_to_download = await self.get_channels_to_download_pics(interest_folder_path)
-        logger.debug(f"{reg_id}: интерес {enriched['name']}. Для скачивания определены кадры ДО - {before_channels_to_download}. "
-                     f"После - {after_channels_to_download}")
-
-        frames_before: list[str] = []
-        frames_after: list[str] = []
-
-        logger.debug(f"{reg_id}: интерес {enriched['name']}. Получаем кадры ДО и ПОСЛЕ загрузки")
-
-        if before_channels_to_download:
-            frames_before = await cms_api.get_frames(
-                jsession=self.jsession, reg_id=reg_id,
-                year=enriched["year"], month=enriched["month"], day=enriched["day"],
-                start_sec=enriched["photo_before_sec"],
-                end_sec=enriched["photo_before_sec"] + 10,
-                channels=before_channels_to_download,
-            )
-            logger.debug(f"{reg_id}: интерес {enriched['name']}. Кадры ДО: {frames_before}")
-        else:
-            logger.info(f"{reg_id}: интерес {enriched['name']}. Все фото ДО по интересу уже загружены на облако")
-
-        if after_channels_to_download:
-            frames_after = await cms_api.get_frames(
-                jsession=self.jsession, reg_id=reg_id,
-                year=enriched["year"], month=enriched["month"], day=enriched["day"],
-                start_sec=enriched["photo_after_sec"],
-                end_sec=enriched["photo_after_sec"] + 10,
-                channels=after_channels_to_download,
-            )
-            logger.debug(f"{reg_id}: интерес {enriched['name']}. Фото ПОСЛЕ: {frames_after}")
-        else:
-            logger.info(f"{reg_id}: интерес {enriched['name']}. Все фото ПОСЛЕ по интересу уже загружены на облако")
-
-        upload_status = await asyncio.to_thread(
-            cloud_uploader.create_pics,
-            frames_before, frames_after
-        )
-        return {"upload_status": upload_status, "frames_before": frames_before, "frames_after": frames_after}
-
-    def analyze_frames_quality(self, frames: list):
-        """
-        Проверяет список кадров: сколько настоящих фото и сколько заглушек.
-        """
-        real_photos = 0
-        placeholders = 0
-
-        for frame_path in frames:
-            if "placeholder" in os.path.basename(frame_path).lower():
-                placeholders += 1
-            else:
-                real_photos += 1
-
-        logger.info(
-            f"Качество кадров: Реальные фото: {real_photos}, Заглушки: {placeholders}")
-        return {
-            "real_photos": real_photos,
-            "placeholders": placeholders,
-            "total": len(frames)
-        }
-
-    async def process_and_upload_videos_async(self, reg_id, interest):
-        interest_name = interest["name"]
-        file_paths = interest.get("file_paths", [])
-        if not file_paths:
-            logger.warning(
-                f"{reg_id}: Нет видео для {interest_name}. Пропускаем.")
-            return
-
-        video_task = asyncio.create_task(
-            self.process_video_and_return_path(reg_id, interest,
-                                               file_paths)
-        )
-
-        # Дожидаемся завершения обеих задач
-        result = await video_task
-
-        if "error" in result:
-            logger.error(f"{reg_id}. Ошибка при обработке видео интереса {interest_name}:  {result["error"]}")
-            return
-        if not result["output_video_path"]:
-            logger.warning(
-                f"{reg_id}: Нечего выгружать на облако.")
-            return
-        await self.upload_interest_video_cloud(reg_id=reg_id, interest_name=interest_name,
-                                         video_path=result["output_video_path"], cloud_folder=interest["cloud_folder"])
 
     async def upload_interest_video_cloud(self, reg_id, interest_name, video_path, cloud_folder):
         # Загружаем видео
@@ -502,70 +382,6 @@ class Main:
             cloud_uploader.upload_file, video_path, cloud_folder)
         return upload_status
 
-    async def process_video_and_return_path(self, reg_id, interest,
-                                            file_paths):
-        """Обрабатывает видео и возвращает путь к финальному файлу."""
-        logger.info(
-            f"{reg_id}: Начинаем обработку видео {file_paths} для {interest['name']}.")
-        interest_name = interest["name"]
-
-        final_interest_video_name = os.path.join(
-            settings.INTERESTING_VIDEOS_FOLDER,
-            f"{interest_name}.{self.output_format}")
-        result = {"output_video_path": final_interest_video_name,
-                  "files_to_delete": []}
-        converted_videos = []
-        for video_path in file_paths:
-            logger.debug(f"Работаем с {video_path}")
-            if not os.path.exists(video_path):
-                logger.error(
-                    f"{reg_id}: Файл {video_path} не найден. Пропускаем.")
-                continue
-            #logger.info(
-            #    f"{reg_id}: Конвертация {video_path} в {self.output_format}.")
-            #output_filename = os.path.join(
-            #    settings.INTERESTING_VIDEOS_FOLDER,
-            ##    f"{interest_name}_{file_paths.index(video_path)}.{self.output_format}")
-            #converted_video = main_funcs.process_video_file(
-            #    video_path, output_filename)
-            #if converted_video:
-            #    converted_videos.append(converted_video)
-
-        final_videos_paths_list = (converted_videos if converted_videos else file_paths)
-        if len(final_videos_paths_list) > 1:
-            try:
-                await asyncio.to_thread(main_funcs.concatenate_videos,
-                                    final_videos_paths_list,
-                                    final_interest_video_name)
-            except Exception as e:
-                return {"error": str(e)}
-            if converted_videos and settings.config.getboolean("General", "del_source_video_after_upload"):
-                logger.debug("Конвертированные файлы исходники перед конкатенацией добавляем в список удаления")
-                for file in final_videos_paths_list:
-                    if os.path.exists(file):
-                        result["files_to_delete"].append(file)
-        elif len(final_videos_paths_list) == 1:
-            output_video_path = final_videos_paths_list[
-                0]  # Если одно видео, просто используем его
-            if os.path.exists(output_video_path):
-                os.rename(output_video_path, final_interest_video_name)
-            else:
-                logger.error(f"Ошибка при попытке использовать видео {output_video_path}. Файл не найден.")
-        else:
-            logger.warning(f"{reg_id}: После обработки не осталось видео.")
-            result["output_video_path"] = None
-            return result
-
-        if converted_videos and settings.config.getboolean("General", "del_source_video_after_upload"):
-            logger.debug("Исходные файлы до конвертации добавляем в список удаления")
-            for file in file_paths:
-                if os.path.exists(file):
-                    result["files_to_delete"].append(file)
-        return result
-
-    def get_last_interest_datetime(self, interests):
-        last_interest = interests[-1]
-        return last_interest["end_time"]
 
     async def mainloop(self):
         logger.info("Mainloop has been launched with success.")
