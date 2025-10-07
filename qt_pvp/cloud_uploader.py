@@ -1,3 +1,4 @@
+from qt_pvp.meta_cache import meta_cache
 from webdav3.client import Client
 from qt_pvp.logger import logger
 from urllib.parse import quote
@@ -12,11 +13,38 @@ import uuid
 import os
 
 
+LIST_TTL  = getattr(settings, "WEBDAV_LIST_TTL", 20)   # сек
+CHECK_TTL = getattr(settings, "WEBDAV_CHECK_TTL", 60)  # сек
+
+def _cache_key_list(folder: str) -> str:
+    return f"dav:list:{folder.rstrip('/')}/"
+
+def _cache_key_check(path: str) -> str:
+    return f"dav:check:{path}"
+
+async def cached_list(client, folder: str):
+    key = _cache_key_list(folder)
+    cached = await meta_cache.get(key)
+    if cached is not None:
+        return cached
+    # webdav3: client.list может кидать исключения — пробрасываем
+    items = client.list(folder) or []
+    await meta_cache.set(key, items, LIST_TTL)
+    return items
+
+async def cached_check(client, path: str) -> bool:
+    key = _cache_key_check(path)
+    cached = await meta_cache.get(key)
+    if cached is not None:
+        return cached
+    ok = bool(client.check(path))
+    await meta_cache.set(key, ok, CHECK_TTL)
+    return ok
+
+
+
 async def create_interest_folder_path_async(name, dest):
     return await asyncio.to_thread(create_interest_folder_path, name, dest)
-
-async def interest_video_exists_async(name):
-    return await asyncio.to_thread(check_if_interest_video_exists, name)
 
 async def upload_dict_as_json_to_cloud_async(data, remote_folder_path):
     return await asyncio.to_thread(upload_dict_as_json_to_cloud, data, remote_folder_path)
@@ -191,6 +219,11 @@ def append_report_line_to_cloud(
                     raise RuntimeError("upload_file_to_cloud вернул False")
 
                 logger.info(f"[REPORTS] Обновлён {remote_file_path}")
+                try:
+                    _invalidate_folder(remote_folder_path)
+                    asyncio.create_task(meta_cache.invalidate(_cache_key_check(remote_file_path)))
+                except Exception:
+                    pass
                 return True
 
             except Exception as e:
@@ -240,54 +273,40 @@ def get_interest_video_cloud_path(interest_name, dest_directory=settings.CLOUD_P
     return interest_video_name
 
 
-def check_if_interest_video_exists(interest_name: str) -> bool:
-    interest_video_name = get_interest_video_cloud_path(interest_name, dest_directory=settings.CLOUD_PATH)
+async def interest_video_exists_async(name):
+    interest_video_name = get_interest_video_cloud_path(name, dest_directory=settings.CLOUD_PATH)
     try:
-        return client.check(interest_video_name)
-    except Exception as e:
-        logger.warning(f"Не удалось проверить наличие файла {interest_video_name}: {e}")
-        return False
-
-
-def _frame_exists_cloud(folder: str, channel_id: int) -> bool:
-    """
-    Быстрая проверка наличия хотя бы одного файла кадра канала в папке.
-    Пытаемся через list (PROPFIND). Если сервер не даёт листинг — делаем точечные check().
-    """
-    try:
-        try:
-            items = client.list(folder) or []
-            # webdav3.list может возвращать имена/пути; приводим к basename
-            import posixpath as _pp
-            basenames = { _pp.basename(x.rstrip("/")) for x in items }
-            for suffix in (f"ch{channel_id}_first.jpg", f"ch{channel_id}_last.jpg"):
-                if any(name.endswith(suffix) for name in basenames):
-                    return True
-        except Exception:
-            pass
-
-        # точечные проверки (быстрые HEAD/PROPFIND)
-        for suffix in (f"ch{channel_id}_first.jpg", f"ch{channel_id}_last.jpg"):
-            remote_path = posixpath.join(folder, suffix)
-            try:
-                if client.check(remote_path):
-                    return True
-            except Exception:
-                continue
-        return False
+        return await cached_check(client, interest_video_name)
     except Exception:
         return False
 
-async def _frame_exists_cloud_async(folder: str, channel_id: int) -> bool:
-    return await asyncio.to_thread(_frame_exists_cloud, folder, channel_id)
 
-def frame_exists(interest_name: str) -> bool:
-    interest_video_name = get_interest_video_cloud_path(interest_name, dest_directory=settings.CLOUD_PATH)
+async def _frame_exists_cloud_async(folder: str, channel_id: int) -> bool:
     try:
-        return client.check(interest_video_name)
-    except Exception as e:
-        logger.warning(f"Не удалось проверить наличие файла {interest_video_name}: {e}")
+        items = await cached_list(client, folder)
+        base = {posixpath.basename(x.rstrip("/")) for x in items}
+        for suffix in (f"ch{channel_id}_first.jpg", f"ch{channel_id}_last.jpg"):
+            if any(name.endswith(suffix) for name in base):
+                return True
+        # fallback: точечные check (тоже через кэш)
+        for suffix in (f"ch{channel_id}_first.jpg", f"ch{channel_id}_last.jpg"):
+            path = posixpath.join(folder, suffix)
+            if await cached_check(client, path):
+                return True
         return False
+    except Exception:
+        # в случае ошибки не кэшируем False, пусть повторит
+        return False
+
+def _invalidate_folder(folder: str):
+    # чистим листинг папки + check для её файлов
+    prefix = f"dav:list:{folder.rstrip('/')}/"
+    # и общий check префикс (грубовато, но эффективно)
+    check_prefix = f"dav:check:{folder.rstrip('/')}/"
+    # fire-and-forget
+    asyncio.create_task(meta_cache.invalidate_prefix(prefix))
+    asyncio.create_task(meta_cache.invalidate_prefix(check_prefix))
+
 
 def create_folder_if_not_exists(client, folder_path):
     """
@@ -301,6 +320,11 @@ def create_folder_if_not_exists(client, folder_path):
         while count < 2:
             try:
                 client.mkdir(folder_path)
+                try:
+                    _invalidate_folder(posixpath.dirname(folder_path))
+                    asyncio.create_task(meta_cache.invalidate(_cache_key_check(folder_path)))
+                except Exception:
+                    pass
                 return True
             except Exception as e:
                 logger.warning(
@@ -326,6 +350,11 @@ def upload_file_to_cloud(client, local_file_path, remote_path, retries=4, base_d
         try:
             client.upload_sync(remote_path=remote_path, local_path=local_file_path)
             logger.info(f"Файл {local_file_path} → {remote_path}: OK")
+            try:
+                _invalidate_folder(posixpath.dirname(remote_path))
+                asyncio.create_task(meta_cache.invalidate(_cache_key_check(remote_path)))
+            except Exception:
+                pass
             return True
         except Exception as e:
             # 4xx (кроме 429) смысла ретраить мало; webdav3, увы, не всегда даёт код.
@@ -395,6 +424,7 @@ def upload_file(file_path, interest_folder_path):
     success = upload_file_to_cloud(client, file_path, remote_path)
     return success
 
+
 async def _upload_one(photo_path, dest_folder):
     if photo_path:
         remote_path = posixpath.join(dest_folder, os.path.basename(photo_path))
@@ -407,16 +437,22 @@ async def upload_pics_async(pics, destinaton_folder, concurrency=6):
     async def one(photo_path):
         if not photo_path:
             return
-        photo_name = os.path.basename(photo_path)
-        remote_path = posixpath.join(destinaton_folder, photo_name)
-        ok = await asyncio.to_thread(upload_file_to_cloud, client, photo_path, remote_path)
-        if ok:
-            delete_local_file(photo_path)
+        remote_path = posixpath.join(destinaton_folder, os.path.basename(photo_path))
+        async with sem:
+            ok = await asyncio.to_thread(upload_file_to_cloud, client, photo_path, remote_path)
+            if ok:
+                delete_local_file(photo_path)
     await asyncio.gather(*(one(p) for p in pics))
+    # после пачки — гарантированная инвалидация папки (на случай, если upload_file_to_cloud в другом месте
+    # был переиспользован без инвалидации)
+    _invalidate_folder(destinaton_folder)
+
 
 async def create_pics_async(pics_before, pics_after, before_folder, after_folder):
-    ok_before = create_folder_if_not_exists(client, before_folder)
-    ok_after  = create_folder_if_not_exists(client, after_folder)
+    ok_before, ok_after = await asyncio.gather(
+        asyncio.to_thread(create_folder_if_not_exists, client, before_folder),
+        asyncio.to_thread(create_folder_if_not_exists, client, after_folder),
+    )
     if ok_before:
         await upload_pics_async(pics_before, before_folder)
     if ok_after:
@@ -457,8 +493,14 @@ def upload_dict_as_json_to_cloud(data: dict, remote_folder_path: str,
         if success:
             delete_local_file(local_file_path)
         logger.info("Отчет успешно выгружен")
+        if success:
+            try:
+                _invalidate_folder(remote_folder_path)
+                asyncio.create_task(meta_cache.invalidate(_cache_key_check(remote_file_path)))
+            except Exception:
+                pass
         return success
 
     except Exception as e:
-        print(f"Ошибка при сохранении JSON в облако: {e}")
+        logger.error(f"Ошибка при сохранении JSON в облако: {e}")
         return False
