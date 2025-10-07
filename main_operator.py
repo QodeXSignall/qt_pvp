@@ -236,10 +236,7 @@ class Main:
                     upload_status = await self.process_frames_before_after(
                         reg_id, interest, channels_files_dict  # ← передаём словарь!!!
                     )
-                    if upload_status["upload_status"]:
-                        for frame in upload_status["frames_before"] + upload_status["frames_after"]:
-                            logger.info(f"{reg_id}: Загрузка фото ок. Удаляем локальный файл {frame}.")
-
+                    logger.info(f"Результат загрузки изображений: {upload_status}")
                     # 7) чистим локальные клипы (кроме «полного» по нужному каналу)
                     removed = cms_api.delete_videos_except(
                         videos_by_channel=channels_files_dict,
