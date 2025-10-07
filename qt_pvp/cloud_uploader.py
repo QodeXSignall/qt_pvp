@@ -46,6 +46,9 @@ async def cached_check(client, path: str) -> bool:
 async def create_interest_folder_path_async(name, dest):
     return await asyncio.to_thread(create_interest_folder_path, name, dest)
 
+async def interest_video_exists_async(name):
+    return await asyncio.to_thread(check_if_interest_video_exists, name)
+
 async def upload_dict_as_json_to_cloud_async(data, remote_folder_path):
     return await asyncio.to_thread(upload_dict_as_json_to_cloud, data, remote_folder_path)
 
@@ -273,8 +276,8 @@ def get_interest_video_cloud_path(interest_name, dest_directory=settings.CLOUD_P
     return interest_video_name
 
 
-async def interest_video_exists_async(name):
-    interest_video_name = get_interest_video_cloud_path(name, dest_directory=settings.CLOUD_PATH)
+async def check_if_interest_video_exists(interest_name: str) -> bool:
+    interest_video_name = get_interest_video_cloud_path(interest_name, dest_directory=settings.CLOUD_PATH)
     try:
         return await cached_check(client, interest_video_name)
     except Exception:

@@ -15,7 +15,6 @@ import os
 
 class Main:
     def __init__(self, output_format="mp4"):
-        self.jsession = cms_api.login().json()["jsession"]
         #threading.Thread(target=main_funcs.video_remover_cycle).start()
         self.output_format = output_format
         self.devices_in_progress = []
@@ -31,8 +30,8 @@ class Main:
             self._per_device_sem[reg_id] = sem
         return sem
 
-    def get_devices_online(self):
-        devices_online = cms_api.get_online_devices(self.jsession)
+    async def get_devices_online(self):
+        devices_online = await cms_api.get_online_devices(self.jsession)
         devices_online = devices_online.json()["onlines"]
         if devices_online:
             logger.info(f"Got devices online: {devices_online}")
@@ -410,14 +409,14 @@ class Main:
             cloud_uploader.upload_file, video_path, cloud_folder)
         return upload_status
 
-
     async def mainloop(self):
         logger.info("Mainloop has been launched with success.")
         self._running: set[asyncio.Task] = set()
+        self.jsession = await cms_api.login().json()["jsession"]
 
         while True:
             # важно: get_devices_online в thread, чтобы не блокировать loop
-            devices_online = await asyncio.to_thread(self.get_devices_online)
+            devices_online = await self.get_devices_online()
 
             for device_dict in devices_online:
                 reg_id = device_dict["did"]
