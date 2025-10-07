@@ -271,7 +271,7 @@ async def get_alarms_async(jsession: str, device_id: str, begin_time: str, end_t
 import aiohttp
 
 @functions.cms_data_get_decorator_async()
-async def execute_download_task(jsession, download_task_url: str):
+async def execute_download_task(jsession, download_task_url: str, *args, **kwargs):
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(download_task_url,
