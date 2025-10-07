@@ -768,7 +768,7 @@ def seconds_since_midnight(dt: datetime.datetime) -> int:
 
 
 def cms_data_get_decorator_async(
-    max_retries: int = 3,
+    max_retries: int = 30,
     delay: float = 1.0,
     return_json: bool = False,
     retry_results: tuple[int, ...] = (22, 24),   # «временные» коды
