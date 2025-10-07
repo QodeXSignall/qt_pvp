@@ -787,6 +787,7 @@ def cms_data_get_decorator_async(max_retries=3, delay=1):
                         raise ValueError("Invalid response from CMS server")
 
                     # Если ответ корректен, возвращаем его
+                    result.raise_for_status()
                     return result
                 except (ValueError, Exception) as e:
                     retries += 1
