@@ -146,9 +146,8 @@ async def get_device_track_all_pages(jsession: str, device_id: str, start_time: 
     return all_tracks
 
 
-async def get_device_track_all_pages_async(jsession: str, device_id: str,
-                                           start_time: str, end_time: str) -> list[dict]:
-    # 1-ю страницу запрашиваем, чтобы понять пагинацию
+
+async def get_device_track_all_pages_async(jsession: str, device_id: str, start_time: str, end_time: str) -> list[dict]:
     first = await get_device_track_page_async(jsession, device_id, start_time, end_time, page=None)
     first.raise_for_status()
     data = first.json()
@@ -156,15 +155,14 @@ async def get_device_track_all_pages_async(jsession: str, device_id: str,
 
     results = [data]
     if pages > 1:
-        # оставшиеся страницы — параллельно, но аккуратно лимитируем
-        tasks = [
-            get_device_track_page_async(jsession, device_id, start_time, end_time, page=p)
-            for p in range(2, pages + 1)
-        ]
-        others = await asyncio.gather(*tasks)
-        for r in others:
-            r.raise_for_status()
-            results.append(r.json())
+        async def _fetch(p):
+            async with limits._PAGES_SEM:
+                r = await get_device_track_page_async(jsession, device_id, start_time, end_time, page=p)
+                r.raise_for_status()
+                return r.json()
+
+        tasks = [asyncio.create_task(_fetch(p)) for p in range(2, pages + 1)]
+        results.extend(await asyncio.gather(*tasks))
     return results
 
 @functions.cms_data_get_decorator_async()
@@ -198,29 +196,35 @@ async def execute_download_task(jsession, download_task_url: str, reg_id):
             return await client.get(download_task_url, params=params)
 
 
-async def wait_and_get_dwn_url(jsession, download_task_url, reg_id):
+async def wait_and_get_dwn_url(jsession, download_task_url, reg_id, poll_interval=1.0, timeout=1800.0):
     logger.info(f"{reg_id}. Загрузка видео...")
+    started = time.monotonic()
     count = 0
     while True:
+        if time.monotonic() - started > timeout:
+            raise TimeoutError(f"{reg_id}: download task timed out after {timeout}s")
+
         response_json = await execute_download_task(jsession=jsession, download_task_url=download_task_url, reg_id=reg_id)
         if not response_json:
-            await asyncio.sleep(1)
-            continue
-        result = response_json["result"]
-        if result == 11 and response_json["oldTaskAll"] and  response_json["oldTaskAll"]["dph"]:
+            await asyncio.sleep(poll_interval); continue
+
+        result = response_json.get("result")
+        old = (response_json.get("oldTaskAll") or {})
+        dph = old.get("dph")
+
+        if result == 11 and dph:
             logger.info(f"{reg_id}. Загрузка видео завершена!")
-            logger.debug(
-                f'Get path: {str(response_json["oldTaskAll"]["dph"])}')
-            return response_json["oldTaskAll"]["dph"]
-        elif result == 32:
-            logger.warning(f"{reg_id}. Устройство отключено! {result}")
+            logger.debug(f"Get path: {dph}")
+            return dph
+        if result == 32:
+            logger.warning(f"{reg_id}. Устройство отключено! 32")
             raise DeviceOfflineError
-            #return {"error": "Device is offline!"}
-        else:
-            count += 1
-            await asyncio.sleep(1)
-            if count % 60 == 0:
-                logger.info(f"Загрузка все еще в процессе. Response {response_json}. Уже {count} секунд.")
+
+        count += 1
+        if count % 60 == 0:
+            logger.info(f"{reg_id}. Все еще грузится: {response_json}. Уже {count} сек.")
+        await asyncio.sleep(poll_interval)
+
 
 async def download_video(
     jsession,

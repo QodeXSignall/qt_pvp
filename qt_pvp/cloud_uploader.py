@@ -249,46 +249,37 @@ def check_if_interest_video_exists(interest_name: str) -> bool:
         return False
 
 
-async def _frame_exists_cloud_async(folder: str, channel_id: int) -> bool:
-    # webdav3 — синхронный; оборачиваем
-    return await asyncio.to_thread(frame_exists_cloud, folder, channel_id)
-
-def frame_exists_cloud(folder_path: str, channel_id: int) -> bool:
+def _frame_exists_cloud(folder: str, channel_id: int) -> bool:
     """
-    Проверяет, есть ли в папке файл, имя которого содержит заданную подстроку.
-
-    :param folder_path: путь до папки в облаке (WebDAV)
-    :param channel_id: подстрока, которую ищем в названии файла
-    :return: True если файл найден, False если нет или произошла ошибка
+    Быстрая проверка наличия хотя бы одного файла кадра канала в папке.
+    Пытаемся через list (PROPFIND). Если сервер не даёт листинг — делаем точечные check().
     """
-    #create_folder_if_not_exists(client, folder_path)
     try:
-        # Получаем список содержимого папки
-        count = 0
-        while count < 2:
+        try:
+            items = client.list(folder) or []
+            # webdav3.list может возвращать имена/пути; приводим к basename
+            import posixpath as _pp
+            basenames = { _pp.basename(x.rstrip("/")) for x in items }
+            for suffix in (f"ch{channel_id}_first.jpg", f"ch{channel_id}_last.jpg"):
+                if any(name.endswith(suffix) for name in basenames):
+                    return True
+        except Exception:
+            pass
+
+        # точечные проверки (быстрые HEAD/PROPFIND)
+        for suffix in (f"ch{channel_id}_first.jpg", f"ch{channel_id}_last.jpg"):
+            remote_path = posixpath.join(folder, suffix)
             try:
-                files = client.list(folder_path)
-                break
-            except Exception as e:
-                logger.warning(
-                    f"Ошибка при создании папки {folder_path} на WebDAV! ({e}) "
-                    f"Попытка {count+1}/2")
-                count += 1
-                time.sleep(1)
-        if count > 2:
-            logger.critical(f"Не удалось создать папку {folder_path}")
-            raise CloudOffline(f"Не удалось получить список кдаров в папке {folder_path}")
-        # Проверяем каждый элемент
-        for f in files:
-            # webdav3 возвращает список путей, иногда включая саму папку
-            filename = posixpath.basename(f)
-            if str(channel_id) in filename:
-                return True
+                if client.check(remote_path):
+                    return True
+            except Exception:
+                continue
         return False
-    except Exception as e:
-        logger.warning(f"Не удалось проверить наличие файлов в {folder_path}: {e}")
+    except Exception:
         return False
 
+async def _frame_exists_cloud_async(folder: str, channel_id: int) -> bool:
+    return await asyncio.to_thread(_frame_exists_cloud, folder, channel_id)
 
 def frame_exists(interest_name: str) -> bool:
     interest_video_name = get_interest_video_cloud_path(interest_name, dest_directory=settings.CLOUD_PATH)

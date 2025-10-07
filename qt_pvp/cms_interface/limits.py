@@ -60,3 +60,5 @@ def _get_video_sem_for(dev_id: str) -> asyncio.Semaphore:
         sem = asyncio.Semaphore(config.getint("Process", "MAX_DOWNLOADS_PER_DEVICE"))
         _GET_VIDEO_LOCKS[dev_id] = sem
     return sem
+
+_PAGES_SEM = asyncio.Semaphore(config.getint("Semafor", "tracks_page_request_max"))

@@ -71,6 +71,8 @@ class Main:
                 self.jsession, reg_id, start_time, stop_time))
             alarms_task = asyncio.create_task(cms_api.get_alarms_async(self.jsession, reg_id, start_time, stop_time))
             tracks, alarm_reports = await asyncio.gather(tracks_task, alarms_task)
+            tracks = [t for page in tracks for t in (page.get("tracks") or [])]
+            alarm_reports = alarm_reports.json()
 
             prepared = cms_api_funcs.prepare_alarms(
                 raw_alarms=alarm_reports.get("alarms", []),
@@ -104,6 +106,32 @@ class Main:
                 # На случай иных форматов ответа
                 logger.warning(f"[ANALYZE] Неожиданный формат из find_interests_by_lifting_switches: {type(interests)}")
                 return []
+
+    async def process_single_interest(self, interest) -> bool:
+        """
+        Полная обработка одного интереса: скачать нужные клипы, склеить/не склеить,
+        вытащить кадры, залить в облако, обновить reports.txt — как у тебя уже сделано.
+
+        Возвращает True, если ИНТЕРЕС полностью готов в облаке (проверяем после работы).
+        """
+        try:
+            # 1) Быстрый скип, если уже готов:
+            if await self.interest_is_ready_in_cloud(interest):
+                return True
+
+            # 2) Ваша текущая логика загрузки/извлечения кадров/аплоада:
+            #    download_reg_videos(...), upload_to_cloud(...), update_reports(...), и т.д.
+            #    Тут просто вызови уже существующий пайплайн.
+            success = await self.download_and_upload_interest(interest)  # <- заверни свой текущий пайплайн в эту функцию
+            if not success:
+                return False
+
+            # 3) Повторная проверка готовности
+            return await self.interest_is_ready_in_cloud(interest)
+
+        except Exception as e:
+            logger.exception(f"Interest failed: {interest.get('name')}: {e}")
+            return False
 
     async def download_reg_videos(self, reg_id, plate, chanel_id: int = None,
                                   start_time=None, end_time=None,
