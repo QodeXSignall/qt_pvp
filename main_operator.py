@@ -338,38 +338,44 @@ class Main:
 
     async def process_frames_before_after(self, reg_id: str, enriched: dict, videos_by_channel):
         """
-        ВЕРСИЯ 2:
-        1) Из каждого клипа берём первый и последний кадр
-        2) Заливаем в облако в before_pics / after_pics
-        Возвращает: {"upload_status": bool, "frames_before": [...], "frames_after": [...]}
+        ВЕРСИЯ 3 (streaming):
+        1) Из каждого клипа берём первый и последний кадр как JPEG bytes (без локальных файлов)
+        2) Заливаем в облако в before_pics / after_pics через PUT
+        Возвращает: {"upload_status": bool}
         """
         channels = [0, 1, 2, 3]
 
-        # 2) Достаём из каждого клипа первый/последний кадр
-        frames_before: list[str] = []
-        frames_after: list[str] = []
+        before_items: list[tuple[str, bytes]] = []
+        after_items: list[tuple[str, bytes]] = []
 
         async def _extract_for_channel(ch: int, path: str | None):
             if not path:
                 return None, None
-            return await cms_api.extract_edge_frames_from_video(
+            # новая функция, которая возвращает (('chX_first.jpg', bytes) | None, ('chX_last.jpg', bytes) | None)
+            return await cms_api.extract_edge_frames_bytes(
                 video_path=path,
                 channel_id=ch,
                 reg_id=reg_id,
             )
 
-        extract_tasks = [asyncio.create_task(_extract_for_channel(ch, videos_by_channel.get(ch))) for ch in channels]
-        for ch, t in zip(channels, asyncio.as_completed(extract_tasks)):
-            first_path, last_path = await t
-            if first_path:
-                frames_before.append(first_path)
-            if last_path:
-                frames_after.append(last_path)
+        tasks = [asyncio.create_task(_extract_for_channel(ch, videos_by_channel.get(ch))) for ch in channels]
 
-        # 3) Заливка кадров в облако — та же функция, что и раньше  :contentReference[oaicite:7]{index=7}
-        upload_status = await cloud_uploader.create_pics_async(
-            frames_before, frames_after, enriched["pics_before_folder"], enriched["pics_after_folder"])
-        return {"upload_status": upload_status, "frames_before": frames_before, "frames_after": frames_after}
+        # Собираем результаты по мере готовности
+        for ch, t in zip(channels, asyncio.as_completed(tasks)):
+            first_item, last_item = await t
+            if first_item:
+                before_items.append(first_item)
+            if last_item:
+                after_items.append(last_item)
+
+        # Загрузка без временных файлов
+        ok_before = await cloud_uploader.upload_many_bytes_async(before_items, enriched["pics_before_folder"],
+                                                                 content_type="image/jpeg")
+        ok_after = await cloud_uploader.upload_many_bytes_async(after_items, enriched["pics_after_folder"],
+                                                                content_type="image/jpeg")
+        upload_status = bool(ok_before and ok_after)
+
+        return {"upload_status": upload_status}
 
 
     async def upload_interest_video_cloud(self, reg_id, interest_name, video_path, cloud_folder):

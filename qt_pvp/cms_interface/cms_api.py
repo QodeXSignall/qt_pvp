@@ -10,9 +10,108 @@ import subprocess
 import datetime
 import asyncio
 import shutil
-import uuid
 import time
+import cv2
 import os
+
+def _grab_frame_ffmpeg_to_bytes(input_path: str, mode: str) -> bytes | None:
+    """
+    Возвращает JPEG-байты кадра через image2pipe.
+    mode: 'first' | 'last'
+    """
+    if mode == "first":
+        cmd = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-ss", "0", "-i", input_path,
+            "-frames:v", "1",
+            "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"
+        ]
+    elif mode == "last":
+        cmd = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-sseof", "-1", "-i", input_path,
+            "-frames:v", "1",
+            "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"
+        ]
+    else:
+        raise ValueError("mode must be 'first' or 'last'")
+
+    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if res.returncode == 0 and res.stdout:
+        return bytes(res.stdout)
+    return None
+
+def _extract_edge_frames_bytes_sync(video_path: str, channel_id: int, reg_id: str) -> tuple[tuple[str, bytes] | None, tuple[str, bytes] | None]:
+    """
+    Снимает кадры в память (JPEG bytes) без временных файлов.
+    Возвращает кортежи вида: ('ch{ch}_first.jpg', bytes) и ('ch{ch}_last.jpg', bytes)
+    или None, если кадр не получилось получить.
+    """
+    first_name = f"ch{channel_id}_first.jpg"
+    last_name  = f"ch{channel_id}_last.jpg"
+
+    # 1) Быстрый путь через ffmpeg → pipe
+    first_bytes = last_bytes = None
+    if _ffmpeg_available():
+        try:
+            first_bytes = _grab_frame_ffmpeg_to_bytes(video_path, "first")
+        except Exception:
+            first_bytes = None
+        try:
+            last_bytes = _grab_frame_ffmpeg_to_bytes(video_path, "last")
+        except Exception:
+            last_bytes = None
+        if first_bytes or last_bytes:
+            return ((first_name, first_bytes) if first_bytes else None,
+                    (last_name,  last_bytes) if last_bytes  else None)
+
+    # 2) Fallback: OpenCV
+    cap = None
+    for attempt in range(3):
+        cap = cv2.VideoCapture(video_path)
+        if cap.isOpened():
+            break
+        logger.warning(f"{reg_id}. ch={channel_id} Попытка {attempt+1}: Не открыть видео {video_path}")
+        time.sleep(0.2)
+
+    if not cap or not cap.isOpened():
+        logger.error(f"{reg_id}. ch={channel_id} Не удалось открыть видео: {video_path}")
+        return None, None
+
+    try:
+        # первый кадр
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        ret_first, frame_first = cap.read()
+        if ret_first and frame_first is not None:
+            ok, buf = cv2.imencode(".jpg", frame_first)
+            if ok:
+                first_bytes = buf.tobytes()
+
+        # последний кадр
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        if total > 0:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, max(total - 1, 0))
+        ret_last, frame_last = cap.read()
+        if (not ret_last or frame_last is None) and total > 1:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, max(total - 2, 0))
+            ret_last, frame_last = cap.read()
+        if ret_last and frame_last is not None:
+            ok, buf = cv2.imencode(".jpg", frame_last)
+            if ok:
+                last_bytes = buf.tobytes()
+
+        return ((first_name, first_bytes) if first_bytes else None,
+                (last_name,  last_bytes)  if last_bytes  else None)
+    finally:
+        try:
+            cap.release()
+        except:
+            pass
+
+async def extract_edge_frames_bytes(video_path: str, channel_id: int, reg_id: str) -> tuple[tuple[str, bytes] | None, tuple[str, bytes] | None]:
+    # ограничитель по кадрам оставляем
+    async with limits.get_frame_sem():
+        return await asyncio.to_thread(_extract_edge_frames_bytes_sync, video_path, channel_id, reg_id)
 
 
 def _ffmpeg_available() -> bool:
@@ -399,62 +498,39 @@ async def download_single_clip_per_channel(
         out[ch] = path
     return out
 
-def _extract_edge_frames_sync(
-    video_path: str,
-    channel_id: int,
-    output_dir: str,
-    reg_id: str,
-    max_retries: int = 3,
-) -> Tuple[str | None, str | None]:
-    """
-    Синхронно извлекает первый и последний кадр из видео.
-    Возвращает (first_frame_path, last_frame_path).
-    Сначала пробует ffmpeg; если он недоступен или неудача — fallback на OpenCV.
-    """
-    if not video_path or not os.path.exists(video_path) or os.path.getsize(video_path) < 10 * 1024:
-        logger.error(f"{reg_id}. ch={channel_id} плохой файл для кадров: {video_path}")
-        return None, None
+# cms_api.py
 
+def _extract_edge_frames_sync(video_path: str, channel_id: int, output_dir: str, reg_id: str):
+    """
+    Пытаемся снять кадры сначала через ffmpeg (быстрее/надёжнее на H.264/H.265),
+    при недоступности — через cv2.VideoCapture с 2-3 попытками.
+    """
     os.makedirs(output_dir, exist_ok=True)
+    first_path = os.path.join(output_dir, f"ch{channel_id}_first.jpg")
+    last_path  = os.path.join(output_dir, f"ch{channel_id}_last.jpg")
 
-    # Итоговые пути
-    base = f"{reg_id}_ch{channel_id}_{uuid.uuid4().hex}"
-    first_path = os.path.join(output_dir, f"{base}_first.jpg")
-    last_path  = os.path.join(output_dir, f"{base}_last.jpg")
-
-    # --- Путь 1: ffmpeg (предпочтительный, быстрее/стабильнее для «крайних» кадров)
+    used_ff = False
     if _ffmpeg_available():
         ok_first = _grab_frame_ffmpeg(video_path, first_path, mode="first")
         ok_last  = _grab_frame_ffmpeg(video_path, last_path,  mode="last")
-
-        if ok_first and ok_last:
+        used_ff = ok_first or ok_last
+        if not ok_first:
+            first_path = None
+        if not ok_last:
+            last_path = None
+        if used_ff:
             return first_path, last_path
-        else:
-            # подчистим неудачные файлы перед фоллбэком
-            if not ok_first and os.path.exists(first_path):
-                try: os.remove(first_path)
-                except: pass
-            if not ok_last and os.path.exists(last_path):
-                try: os.remove(last_path)
-                except: pass
-            logger.warning(f"{reg_id}. ch={channel_id} ffmpeg не справился, откатываемся на OpenCV")
 
-    # --- Путь 2: OpenCV (твой текущий код, но локально, без изменений внешнего API)
-    try:
-        import cv2  # локальный импорт, чтобы не тянуть cv2 если ffmpeg всё сделал
-    except Exception as e:
-        logger.error(f"{reg_id}. ch={channel_id} OpenCV недоступен: {e}")
-        return None, None
-
+    # fallback на OpenCV
     cap = None
-    for attempt in range(max_retries):
+    for attempt in range(3):
         cap = cv2.VideoCapture(video_path)
         if cap.isOpened():
             break
-        logger.warning(f"{reg_id}. ch={channel_id} Попытка {attempt + 1}: Не удалось открыть видео: {video_path}")
+        logger.warning(f"{reg_id}. ch={channel_id} Попытка {attempt+1}: Не открыть видео {video_path}")
         time.sleep(0.2)
 
-    if cap is None or not cap.isOpened():
+    if not cap or not cap.isOpened():
         logger.error(f"{reg_id}. ch={channel_id} Не удалось открыть видео: {video_path}")
         return None, None
 
@@ -462,30 +538,21 @@ def _extract_edge_frames_sync(
         # первый кадр
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
         ret_first, frame_first = cap.read()
-        if ret_first and frame_first is not None:
-            import numpy as np
-            ok = cv2.imwrite(first_path, frame_first)
-            if not ok:
-                logger.warning(f"{reg_id}. ch={channel_id} cv2.imwrite вернул False: {first_path}")
-                first_path = None
+        if ret_first and frame_first is not None and cv2.imwrite(first_path, frame_first):
+            pass
         else:
             first_path = None
 
         # последний кадр
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-        if total_frames > 0:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, max(total_frames - 1, 0))
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        if total > 0:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, max(total - 1, 0))
         ret_last, frame_last = cap.read()
-        if (not ret_last or frame_last is None) and total_frames > 1:
-            # иногда последний недоступен, пробуем предпоследний
-            cap.set(cv2.CAP_PROP_POS_FRAMES, max(total_frames - 2, 0))
+        if (not ret_last or frame_last is None) and total > 1:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, max(total - 2, 0))
             ret_last, frame_last = cap.read()
-
-        if ret_last and frame_last is not None:
-            ok = cv2.imwrite(last_path, frame_last)
-            if not ok:
-                logger.warning(f"{reg_id}. ch={channel_id} cv2.imwrite вернул False: {last_path}")
-                last_path = None
+        if ret_last and frame_last is not None and cv2.imwrite(last_path, frame_last):
+            pass
         else:
             last_path = None
 
@@ -496,20 +563,11 @@ def _extract_edge_frames_sync(
         except:
             pass
 
-
 async def extract_edge_frames_from_video(
-    video_path: str,
-    channel_id: int,
-    reg_id: str,
-    output_dir: str = settings.FRAMES_TEMP_FOLDER,
-) -> Tuple[str | None, str | None]:
-    """
-    Асинхронная обёртка над синхронной выжимкой кадров (первый/последний).
-    """
-    async with limits.get_frame_sem():  # используем существующий семафор кадров  :contentReference[oaicite:6]{index=6}
-        return await asyncio.to_thread(
-            _extract_edge_frames_sync, video_path, channel_id, output_dir, reg_id
-        )
+    video_path: str, channel_id: int, reg_id: str, output_dir: str = settings.FRAMES_TEMP_FOLDER
+) -> tuple[str | None, str | None]:
+    async with limits.get_frame_sem():
+        return await asyncio.to_thread(_extract_edge_frames_sync, video_path, channel_id, output_dir, reg_id)
 
 
 def delete_videos_except(

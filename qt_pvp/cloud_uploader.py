@@ -5,6 +5,7 @@ from urllib.parse import quote
 from qt_pvp import settings
 import traceback
 import posixpath
+import requests
 import asyncio
 import random
 import json
@@ -15,6 +16,67 @@ import os
 
 LIST_TTL  = getattr(settings, "WEBDAV_LIST_TTL", 20)   # сек
 CHECK_TTL = getattr(settings, "WEBDAV_CHECK_TTL", 60)  # сек
+
+def upload_bytes_to_cloud(client, data: bytes, remote_path: str, content_type: str = "application/octet-stream",
+                          retries: int = 4, base_delay: float = 0.8) -> bool:
+    """
+    Сырая загрузка байт через HTTP PUT (минуя локальные файлы).
+    Использует настройки и сессию webdav3-клиента.
+    """
+    full_url = _build_full_url(client, remote_path)
+    auth = _resolve_auth(client)
+    headers = {"Content-Type": content_type}
+
+    # Гарантируем, что родительская папка существует
+    parent = posixpath.dirname(remote_path)
+    create_folder_if_not_exists(client, parent)
+
+    last_exc = None
+    for attempt in range(1, retries + 1):
+        try:
+            sess = getattr(client, "session", None) or requests.Session()
+            resp = sess.put(full_url, data=data, headers=headers, auth=auth)
+            if 200 <= resp.status_code < 300:
+                logger.info(f"[PUT BYTES] {remote_path}: OK ({len(data)} bytes)")
+                try:
+                    _invalidate_folder(parent)
+                    asyncio.create_task(meta_cache.invalidate(_cache_key_check(remote_path)))
+                except Exception:
+                    pass
+                return True
+            raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:200]}")
+        except Exception as e:
+            last_exc = e
+            logger.warning(f"[PUT BYTES] fail {attempt}/{retries} → {remote_path}: {e}")
+            if attempt >= retries:
+                break
+            time.sleep(base_delay * (2 ** (attempt - 1)) + random.uniform(0, 0.3))
+    if last_exc:
+        logger.error(f"[PUT BYTES] give up: {remote_path}: {last_exc}")
+    return False
+
+async def upload_many_bytes_async(items: list[tuple[str, bytes]], destination_folder: str,
+                                  content_type: str = "image/jpeg", concurrency: int = 6) -> bool:
+    """
+    items: список кортежей (filename, bytes). Грузит параллельно, без временных файлов.
+    """
+    if not items:
+        _invalidate_folder(destination_folder)
+        return True
+
+    sem = asyncio.Semaphore(concurrency)
+
+    async def one(name: str, data: bytes) -> bool:
+        if not data:
+            return True
+        remote_path = posixpath.join(destination_folder, name)
+        async with sem:
+            return await asyncio.to_thread(upload_bytes_to_cloud, client, data, remote_path, content_type)
+
+    ok_list = await asyncio.gather(*(one(n, d) for (n, d) in items), return_exceptions=False)
+    _invalidate_folder(destination_folder)
+    return all(ok_list)
+
 
 def _cache_key_list(folder: str) -> str:
     return f"dav:list:{folder.rstrip('/')}/"
@@ -156,103 +218,79 @@ def _download_file_safe(client, remote_path: str, local_path: str) -> bool:
     return True
 
 
-def append_report_line_to_cloud(
-    remote_folder_path: str,
-    created_start_time: str,
-    created_end_time: str,
-    file_name: str,
-    report_filename: str = "reports.txt",
-) -> bool:
+# === cloud_uploader.py (заменить реализацию append_report_line_to_cloud) ===
+def _download_bytes_safe(client, remote_path: str) -> bytes | None:
     """
-    Создаёт (если нет) или обновляет reports.txt в заданной папке WebDAV, добавляя строку:
-    "{created_start_time} {created_end_time} {file_name}"
-    Все сетевые обращения выполняются с до 3 попыток.
+    Аккуратно скачивает файл в память. Возвращает bytes или None (если 404/нет файла).
     """
-    tmp_local = None
     try:
-        # Подготовка путей и временного файла
+        full_url = _build_full_url(client, remote_path)
+        auth = _resolve_auth(client)
+        sess = getattr(client, "session", None)
+        if sess is None:
+            import requests as _req
+            sess = _req.Session()
+        resp = sess.get(full_url, auth=auth, stream=True)
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.content or b""
+    except Exception as e:
+        logger.warning(f"[REPORTS] download {remote_path} failed: {e}")
+        return None
+
+def append_report_line_to_cloud(remote_folder_path: str, created_start_time: str, created_end_time: str, file_name: str,
+                                report_filename: str = "reports.txt") -> bool:
+    """
+    Без временных файлов:
+    - GET в память (если нет файла — стартуем с пустого контента)
+    - append строки (c \n при необходимости)
+    - PUT обратно
+    """
+    try:
+        if not create_folder_if_not_exists(client, remote_folder_path):
+            return False
+
         remote_file_path = posixpath.join(remote_folder_path, report_filename)
-        tmp_dir = getattr(settings, "REPORTS_TEMP_FOLDER", "/tmp")
-        os.makedirs(tmp_dir, exist_ok=True)
-        tmp_local = os.path.join(tmp_dir, f"{uuid.uuid4().hex}.txt")
 
-        line = f"{created_start_time} {created_end_time} {file_name}\n"
+        # 1) Проверяем существование
+        try:
+            exists = client.check(remote_file_path)
+        except Exception:
+            exists = False
 
-        # Ретрай-цикл на все облачные операции
-        last_err = None
-        for attempt in range(1, 4):
-            try:
-                logger.debug(f"[REPORTS] attempt {attempt}/3 → {remote_file_path}")
+        # 2) Сформируем строку
+        line = f"{created_start_time} - {created_end_time}   {file_name}"
 
-                # 1) гарантируем наличие папки
-                if not create_folder_if_not_exists(client, remote_folder_path):
-                    raise RuntimeError(f"Папка {remote_folder_path} недоступна для записи")
-
-                # 2) проверяем, существует ли отчёт
+        # 3) Считываем текущее содержимое (если есть) в память
+        content = b""
+        if exists:
+            data = _download_bytes_safe(client, remote_file_path)
+            if data is None:
+                # трактуем как «нет файла»
                 exists = False
-                try:
-                    exists = client.check(remote_file_path)
-                except Exception as e_check:
-                    # Некоторые WebDAV-сервера могут не поддерживать PROPFIND корректно
-                    logger.warning(f"[REPORTS] check({remote_file_path}) упал: {e_check}. Продолжаем как 'не существует'.")
-                    exists = False
+            else:
+                content = data
 
-                # 3) либо скачиваем и аппендим, либо создаём заново
-                if exists:
-                    # безопасно скачиваем (с fallback)
-                    if not _download_file_safe(client, remote_file_path, tmp_local):
-                        raise RuntimeError(f"Не удалось скачать {remote_file_path}")
+        # 4) Акт аккуратной дописки \n
+        needs_nl = len(content) > 0 and not content.endswith(b"\n")
+        to_upload = content + (b"\n" if needs_nl else b"") + line.encode("utf-8")
 
-                    # аккуратно добавим строку (с \n, если его не было)
-                    with open(tmp_local, "rb") as frb:
-                        content = frb.read()
-                    needs_nl = len(content) > 0 and not content.endswith(b"\n")
-                    with open(tmp_local, "ab") as fab:
-                        if needs_nl:
-                            fab.write(b"\n")
-                        fab.write(line.encode("utf-8"))
-                else:
-                    # создаём новый локальный файл с одной строкой
-                    with open(tmp_local, "w", encoding="utf-8") as fw:
-                        fw.write(line)
-
-                # 4) загружаем обратно (тоже под ретрай внешнего цикла)
-                ok = upload_file_to_cloud(client, tmp_local, remote_file_path)
-                if not ok:
-                    raise RuntimeError("upload_file_to_cloud вернул False")
-
-                logger.info(f"[REPORTS] Обновлён {remote_file_path}")
-                try:
-                    _invalidate_folder(remote_folder_path)
-                    asyncio.create_task(meta_cache.invalidate(_cache_key_check(remote_file_path)))
-                except Exception:
-                    pass
-                return True
-
-            except Exception as e:
-                last_err = e
-                logger.warning(f"[REPORTS] Ошибка на попытке {attempt}/3: {e}")
-                # на последней попытке упадём окончательно
-                if attempt < 3:
-                    # можно добавить небольшую паузу при желании:
-                    # time.sleep(0.5)
-                    continue
-                break
-
-        if last_err:
-            raise last_err
-        return False
+        # 5) Заливаем обратно одной операцией
+        ok = upload_bytes_to_cloud(client, to_upload, remote_file_path, content_type="text/plain; charset=utf-8")
+        if ok:
+            logger.info(f"[REPORTS] Обновлён {remote_file_path}")
+            try:
+                _invalidate_folder(remote_folder_path)
+                asyncio.create_task(meta_cache.invalidate(_cache_key_check(remote_file_path)))
+            except Exception:
+                pass
+        return ok
 
     except Exception as e:
         logger.error(f"[REPORTS] Не удалось обновить {remote_folder_path}/{report_filename}: {e}\n{traceback.format_exc()}")
         return False
-    finally:
-        # Чистим временный файл
-        try:
-            if tmp_local and os.path.exists(tmp_local):
-                delete_local_file(tmp_local)
-        except Exception:
-            pass
+
 
 def parse_interest_name(name: str):
     """
