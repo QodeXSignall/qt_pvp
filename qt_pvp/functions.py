@@ -4,7 +4,6 @@ from qt_pvp.filelocker import FileLock, _load_states, _atomic_save_states, LOCK_
 from typing import List
 import subprocess
 import datetime
-import requests
 import zipfile
 import ffmpeg
 import shutil
@@ -63,28 +62,21 @@ def unzip_archives_in_directory(input_dir, output_dir):
 
 
 def split_time_range_to_dicts(start_time, end_time, interval):
-    # Преобразуем строки в объекты datetime
-    # Проверяем, чтобы начало было раньше конца
-    if start_time >= end_time:
-        raise ValueError("Время начала должно быть раньше времени окончания.")
-    # Создаем пустой список для хранения результатов
+    if isinstance(start_time, str): start_time = datetime.datetime.fromisoformat(start_time)
+    if isinstance(end_time, str):   end_time   = datetime.datetime.fromisoformat(end_time)
+    if start_time >= end_time: raise ValueError("...")
     result = []
-    current_time = start_time
-    while current_time + interval <= end_time:
-        next_time = min(current_time + interval, end_time)
-        result.append({
-            'time_start': current_time,
-            'time_end': next_time
-        })
-        current_time = next_time
+    cur = start_time
+    while cur < end_time:
+        nxt = min(cur + interval, end_time)
+        result.append({"time_start": cur, "time_end": nxt})
+        cur = nxt
     return result
+
 
 
 # qt_pvp/functions.py
 def concatenate_videos(converted_files, output_abs_name):
-    import shutil, os, subprocess, uuid
-    from qt_pvp.logger import logger
-
     concat_candidates = []
     for f in converted_files:
         if not f:
@@ -106,8 +98,8 @@ def concatenate_videos(converted_files, output_abs_name):
         os.makedirs(os.path.dirname(output_abs_name), exist_ok=True)
         shutil.copyfile(src, output_abs_name)
         logger.debug(f"[CONCAT] Единственный файл — скопирован: {src} -> {output_abs_name}")
-        logger.debug(f"Удаляем исходный файл ({src})")
-        os.remove(src)
+        #logger.debug(f"Удаляем исходный файл ({src})")
+        #os.remove(src)
         return
 
     # стандартная concat через ffmpeg

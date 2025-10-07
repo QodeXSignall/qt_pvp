@@ -47,7 +47,7 @@ async def create_interest_folder_path_async(name, dest):
     return await asyncio.to_thread(create_interest_folder_path, name, dest)
 
 async def interest_video_exists_async(name):
-    return await asyncio.to_thread(check_if_interest_video_exists, name)
+    return await check_if_interest_video_exists(name)
 
 async def upload_dict_as_json_to_cloud_async(data, remote_folder_path):
     return await asyncio.to_thread(upload_dict_as_json_to_cloud, data, remote_folder_path)
@@ -254,21 +254,23 @@ def append_report_line_to_cloud(
         except Exception:
             pass
 
-
-def parse_filename(filename):
+def parse_interest_name(name: str):
     """
-    Парсинг названия файла для извлечения имени регистратора и даты.
-    Предполагается, что имя файла имеет следующий формат:
-    "регистр_имя_YYYY-MM-DD_HH_MM_SS.mp4"
+    Разбирает имя интереса вида:
+    "<PLATE>_YYYY.MM.DD HH.MM.SS-HH.MM.SS" (опц. расширение в конце).
+    Возвращает (plate, date_str, start_str, end_str).
+    Бросает ValueError при несоответствии.
     """
-    # Разбиваем строку на части
-    parts = filename.split(' ')
-    main_part = parts[0]
-    main_parts = main_part.split("_")
-    reg_id = main_parts[0]
-    date_str = main_parts[1]
-    return reg_id, date_str
+    base = os.path.basename(name)
+    m = settings._INTEREST_RE.match(base)
+    if not m:
+        raise ValueError(f"Invalid interest name format: {name!r}")
+    gd = m.groupdict()
+    return gd["plate"], gd["date"], gd["start"], gd["end"]
 
+def parse_filename(filename: str):
+    plate, date_str, _, _ = parse_interest_name(filename)
+    return plate, date_str
 
 def get_interest_video_cloud_path(interest_name, dest_directory=settings.CLOUD_PATH):
     registr_folder, date_folder_path, interest_folder_path = get_interest_folder_path(interest_name, dest_directory)
@@ -383,12 +385,10 @@ def delete_local_file(local_file_path):
 
 
 def get_interest_folder_path(interest_name, dest_directory):
-    registr_name, date_str = parse_filename(interest_name)
-    # Формируем пути на удаленном сервере
-    registr_folder = posixpath.join(dest_directory, registr_name)
-    date_folder = f'{date_str}'
-    date_folder_path = posixpath.join(registr_folder, date_folder)
-    interest_folder_path = posixpath.join(date_folder_path, interest_name)
+    plate, date_str, _, _ = parse_interest_name(interest_name)
+    registr_folder = posixpath.join(dest_directory, plate)
+    date_folder_path = posixpath.join(registr_folder, date_str)
+    interest_folder_path = posixpath.join(date_folder_path, os.path.splitext(os.path.basename(interest_name))[0])
     return registr_folder, date_folder_path, interest_folder_path
 
 
@@ -435,31 +435,36 @@ async def _upload_one(photo_path, dest_folder):
         if ok:
             delete_local_file(photo_path)
 
-async def upload_pics_async(pics, destinaton_folder, concurrency=6):
+async def upload_pics_async(pics, destinaton_folder, concurrency=6) -> bool:
+    """
+    Заливает список файлов в папку и удаляет локальные файлы после успешной загрузки.
+    Возвращает True, если все (или пустой список) прошли успешно.
+    """
+    if not pics:
+        _invalidate_folder(destinaton_folder)
+        return True
+
     sem = asyncio.Semaphore(concurrency)
-    async def one(photo_path):
+
+    async def one(photo_path: str) -> bool:
         if not photo_path:
-            return
+            return True
         remote_path = posixpath.join(destinaton_folder, os.path.basename(photo_path))
         async with sem:
             ok = await asyncio.to_thread(upload_file_to_cloud, client, photo_path, remote_path)
             if ok:
                 delete_local_file(photo_path)
-    await asyncio.gather(*(one(p) for p in pics))
-    # после пачки — гарантированная инвалидация папки (на случай, если upload_file_to_cloud в другом месте
-    # был переиспользован без инвалидации)
+            return bool(ok)
+
+    results = await asyncio.gather(*(one(p) for p in pics), return_exceptions=False)
+    # после пачки — гарантированная инвалидация папки
     _invalidate_folder(destinaton_folder)
+    return all(results)
 
-
-async def create_pics_async(pics_before, pics_after, before_folder, after_folder):
-    ok_before, ok_after = await asyncio.gather(
-        asyncio.to_thread(create_folder_if_not_exists, client, before_folder),
-        asyncio.to_thread(create_folder_if_not_exists, client, after_folder),
-    )
-    if ok_before:
-        await upload_pics_async(pics_before, before_folder)
-    if ok_after:
-        await upload_pics_async(pics_after,  after_folder)
+async def create_pics_async(before_frames, after_frames, before_folder, after_folder) -> bool:
+    ok1 = await upload_pics_async(before_frames, before_folder)
+    ok2 = await upload_pics_async(after_frames, after_folder)
+    return bool(ok1 and ok2)
 
 def upload_dict_as_json_to_cloud(data: dict, remote_folder_path: str,
                                  filename: str = "report.json"):

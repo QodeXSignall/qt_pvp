@@ -6,6 +6,7 @@ from qt_pvp import settings
 import datetime
 import functools
 import asyncio
+import httpx
 
 
 io_to_reg_map = {1: 20, 2: 21, 3: 22, 4: 23}
@@ -766,39 +767,70 @@ def seconds_since_midnight(dt: datetime.datetime) -> int:
     return int(delta.total_seconds())
 
 
-def cms_data_get_decorator_async(max_retries=3, delay=1):
+def cms_data_get_decorator_async(
+    max_retries: int = 3,
+    delay: float = 1.0,
+    return_json: bool = False,
+    retry_results: tuple[int, ...] = (22, 24),   # «временные» коды
+):
     """
-    Декоратор для повторного выполнения запросов к CMS серверу в случае ошибок.
-    :param max_retries: Максимальное количество попыток.
-    :param delay: Задержка между попытками (в секундах).
+    Универсальный декоратор для CMS-запросов.
+    - Разбирает JSON, чтобы решить — ретраить или нет.
+    - По умолчанию возвращает httpx.Response; если return_json=True — dict.
+    - НЕ ретраит код 32 (offline) — отдаём наверх как есть.
     """
 
     def decorator(func):
         @functools.wraps(func)
         async def wrapper(*args, **kwargs):
-            retries = 0
-            while retries < max_retries:
-                try:
-                    # Выполняем асинхронную функцию
-                    result = await func(*args, **kwargs)
-                    # Проверяем ответ (предполагаем, что ответ — это JSON)
-                    if isinstance(result, dict) and result.get(
-                            "result") == 24:
-                        raise ValueError("Invalid response from CMS server")
+            attempt = 0
+            last_exc: Exception | None = None
 
-                    # Если ответ корректен, возвращаем его
-                    result.raise_for_status()
-                    return result
-                except (ValueError, Exception) as e:
-                    retries += 1
-                    logger.warning(
-                        f"Attempt {retries} failed: {e}. Retrying in {delay} seconds...")
+            while attempt < max_retries:
+                attempt += 1
+                try:
+                    result = await func(*args, **kwargs)
+
+                    # Поддержим обе ветки: функция вернула Response или сразу dict
+                    data = None
+                    if isinstance(result, httpx.Response):
+                        # сетевые/HTTP ошибки → сразу исключение
+                        result.raise_for_status()
+                        try:
+                            data = result.json()
+                        except Exception as je:
+                            # кривой JSON — можно сделать ещё одну попытку
+                            logger.warning(f"[CMS] JSON parse failed on attempt {attempt}/{max_retries}: {je}")
+                            raise
+                    elif isinstance(result, dict):
+                        data = result
+                    else:
+                        # неизвестный тип — вернём как есть
+                        return result
+
+                    # Если JSON получен — смотрим бизнес-код
+                    res_code = data.get("result")
+                    if res_code in retry_results:
+                        # временная ошибка → ждём и повторяем
+                        logger.warning(f"[CMS] result={res_code} → retry {attempt}/{max_retries} after {delay}s")
+                        await asyncio.sleep(delay)
+                        continue
+                    # 32 (offline) — не ретраим, отдаём как есть
+                    # остальные коды — считаем «ок» и возвращаем
+
+                    return data if return_json else result
+
+                except Exception as e:
+                    last_exc = e
+                    if attempt >= max_retries:
+                        break
+                    logger.warning(f"[CMS] attempt {attempt}/{max_retries} failed: {e}; retry after {delay}s")
                     await asyncio.sleep(delay)
 
-            # Если все попытки исчерпаны, вызываем исключение
-            raise Exception(f"Failed after {max_retries} retries")
+            # все попытки исчерпаны
+            if last_exc:
+                raise last_exc
+            raise RuntimeError(f"[CMS] Failed after {max_retries} attempts without specific exception")
 
         return wrapper
-
     return decorator
-

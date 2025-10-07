@@ -129,24 +129,6 @@ async def get_device_track(jsession: str, device_id: str, start_time: str,
             return await client.get(url, params=params)
 
 
-async def get_device_track_all_pages(jsession: str, device_id: str, start_time: str,
-                               stop_time: str):
-    total_pages = 2
-    current_page = 1
-    all_tracks = []
-    while current_page < total_pages:
-        tracks = await get_device_track(jsession, device_id, start_time, stop_time,
-                                  page=current_page)
-        tracks_json = tracks.json()
-        total_pages = tracks_json["pagination"]["totalPages"]
-        current_page = tracks_json["pagination"]["currentPage"]
-        all_tracks += tracks_json["tracks"]
-        if current_page >= total_pages:
-            break
-    return all_tracks
-
-
-
 async def get_device_track_all_pages_async(jsession: str, device_id: str, start_time: str, end_time: str) -> list[dict]:
     first = await get_device_track_page_async(jsession, device_id, start_time, end_time, page=None)
     first.raise_for_status()
@@ -156,7 +138,7 @@ async def get_device_track_all_pages_async(jsession: str, device_id: str, start_
     results = [data]
     if pages > 1:
         async def _fetch(p):
-            async with limits._PAGES_SEM:
+            async with limits.get_pages_sem():
                 r = await get_device_track_page_async(jsession, device_id, start_time, end_time, page=p)
                 r.raise_for_status()
                 return r.json()
@@ -204,7 +186,8 @@ async def wait_and_get_dwn_url(jsession, download_task_url, reg_id, poll_interva
         if time.monotonic() - started > timeout:
             raise TimeoutError(f"{reg_id}: download task timed out after {timeout}s")
 
-        response_json = await execute_download_task(jsession=jsession, download_task_url=download_task_url, reg_id=reg_id)
+        response = await execute_download_task(jsession=jsession, download_task_url=download_task_url, reg_id=reg_id)
+        response_json = response.json()
         if not response_json:
             await asyncio.sleep(poll_interval); continue
 

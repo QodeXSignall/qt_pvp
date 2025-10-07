@@ -106,32 +106,6 @@ class Main:
                 logger.warning(f"[ANALYZE] Неожиданный формат из find_interests_by_lifting_switches: {type(interests)}")
                 return []
 
-    async def process_single_interest(self, interest) -> bool:
-        """
-        Полная обработка одного интереса: скачать нужные клипы, склеить/не склеить,
-        вытащить кадры, залить в облако, обновить reports.txt — как у тебя уже сделано.
-
-        Возвращает True, если ИНТЕРЕС полностью готов в облаке (проверяем после работы).
-        """
-        try:
-            # 1) Быстрый скип, если уже готов:
-            if await self.interest_is_ready_in_cloud(interest):
-                return True
-
-            # 2) Ваша текущая логика загрузки/извлечения кадров/аплоада:
-            #    download_reg_videos(...), upload_to_cloud(...), update_reports(...), и т.д.
-            #    Тут просто вызови уже существующий пайплайн.
-            success = await self.download_and_upload_interest(interest)  # <- заверни свой текущий пайплайн в эту функцию
-            if not success:
-                return False
-
-            # 3) Повторная проверка готовности
-            return await self.interest_is_ready_in_cloud(interest)
-
-        except Exception as e:
-            logger.exception(f"Interest failed: {interest.get('name')}: {e}")
-            return False
-
     async def download_reg_videos(self, reg_id, plate, chanel_id: int = None,
                                   start_time=None, end_time=None,
                                   by_trigger=False, proc=False,
@@ -166,9 +140,9 @@ class Main:
                     datetime.datetime.strptime(start_time, TIME_FMT) +
                     datetime.timedelta(seconds=max_span)
             ).strftime(TIME_FMT)
-        else:
-            logger.debug(f"f{reg_id}. Time difference is too short ({time_difference} сек.)")
-            return
+        #else:
+        #    logger.debug(f"{reg_id}. Time difference is too short ({time_difference} сек.)")
+        #    return
 
         logger.info(f"{reg_id} Начало: {start_time}, Конец: {end_time}")
 
@@ -210,10 +184,7 @@ class Main:
                 cloud_uploader.create_folder_if_not_exists(cloud_uploader.client, pics_after_folder)
 
                 # 1) проверяем наличие полного видео интереса в облаке
-                interest_video_exists = await asyncio.to_thread(
-                    cloud_uploader.check_if_interest_video_exists,
-                    interest_name
-                )
+                interest_video_exists = await cloud_uploader.check_if_interest_video_exists(interest_name)
 
                 # 2) какие каналы нужны для кадров
                 before_channels_to_download, after_channels_to_download = await self.get_channels_to_download_pics(
@@ -438,9 +409,15 @@ class Main:
 
             await asyncio.sleep(3)
 
-        cms_http.close_cms_async_client()
+
+async def _run():
+    d = Main()
+    try:
+        await d.mainloop()
+    finally:
+        # всегда освобождаем соединения httpx
+        await cms_http.close_cms_async_client()
 
 
 if __name__ == "__main__":
-    d = Main()
-    asyncio.run(d.mainloop())
+    asyncio.run(_run())

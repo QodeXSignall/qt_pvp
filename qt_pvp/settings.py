@@ -1,6 +1,7 @@
 import configparser
 import posixpath
 import os
+import re
 
 CUR_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_FOLDER = os.path.join(CUR_DIR, "output")
@@ -37,3 +38,19 @@ cms_login = os.environ.get("cms_login")
 cms_password = os.environ.get("cms_password")
 TIME_FMT = "%Y-%m-%d %H:%M:%S"
 
+
+_INTEREST_RE = re.compile(
+    r"""
+    ^
+    (?P<plate>.+?)          # всё до подчёркивания — номер/идентификатор, допускаем пробелы
+    _
+    (?P<date>\d{4}\.\d{2}\.\d{2})   # YYYY.MM.DD
+    \s
+    (?P<start>\d{2}\.\d{2}\.\d{2})  # HH.MM.SS
+    -
+    (?P<end>\d{2}\.\d{2}\.\d{2})    # HH.MM.SS
+    (?:\.[A-Za-z0-9]{1,4})?         # опц. расширение (на всякий)
+    $
+    """,
+    re.VERBOSE
+)
