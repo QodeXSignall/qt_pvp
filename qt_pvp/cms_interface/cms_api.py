@@ -272,12 +272,12 @@ import aiohttp
 
 @functions.cms_data_get_decorator_async()
 async def execute_download_task(jsession, download_task_url: str, reg_id):
-    params={"jsession": jsession}
-    logger.debug("execute_download_task", jsession, params, download_task_url)
+    #params={"jsession": jsession}
+    #logger.debug("execute_download_task", jsession, params, download_task_url)
     async with limits.get_cms_global_sem():
         async with limits.get_device_sem(reg_id):
             client = cms_http.get_cms_async_client()
-            return await client.get(download_task_url, params=params)
+            return await client.get(download_task_url)
 
 
 async def wait_and_get_dwn_url(jsession, download_task_url, reg_id, poll_interval=1.0, timeout=1800.0):
