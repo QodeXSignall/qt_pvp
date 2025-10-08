@@ -56,7 +56,5 @@ def find_nearby_name(
 def get_ignore_points(ignore_file_path=settings.IGNORE_POINTS_JSON):
     return json.load(open(ignore_file_path))["ignore_points"]
 
-ref = "53.650027, 55.976373"
-print(find_nearby_name(ref, get_ignore_points('/Users/artur/PycharmProjects/Tracker/qt_pvp/qt_pvp/data/ignore_points.json'), tolerance_m=50))
 
 
