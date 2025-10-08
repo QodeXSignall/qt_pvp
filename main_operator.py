@@ -180,8 +180,8 @@ class Main:
                 pics_before_folder = posixpath.join(interest_cloud_folder, "before_pics")
                 interest["pics_before_folder"] = pics_before_folder
                 interest["pics_after_folder"] = pics_after_folder
-                cloud_uploader.create_folder_if_not_exists(cloud_uploader.client, pics_before_folder)
-                cloud_uploader.create_folder_if_not_exists(cloud_uploader.client, pics_after_folder)
+                await cloud_uploader.acreate_folder_if_not_exists(cloud_uploader.client, pics_before_folder)
+                await cloud_uploader.acreate_folder_if_not_exists(cloud_uploader.client, pics_after_folder)
 
                 # 1) проверяем наличие полного видео интереса в облаке
                 interest_video_exists = await cloud_uploader.check_if_interest_video_exists(interest_name)

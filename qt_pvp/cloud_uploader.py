@@ -395,6 +395,44 @@ def invalidate_folder_now(folder: str, meta_cache) -> None:
                            "В async-коде используйте: await ainvalidate_folder(...).")
 
 
+async def acreate_folder_if_not_exists(client, folder_path: str) -> bool:
+    """
+    Async-версия создания папки, безопасная для вызова внутри event loop.
+    Внутри все блокирующие вызовы уводит в thread, а инвалидацию кэша делает через await.
+    """
+    try:
+        exists = await asyncio.to_thread(client.check, folder_path)
+        if exists:
+            return True
+
+        logger.info(f"Папка {folder_path} не существует. Создаю...")
+        count = 0
+        while count < 2:
+            try:
+                # mkdir — блокирующий вызов webdav3 → в thread
+                await asyncio.to_thread(client.mkdir, folder_path)
+
+                # инвалидация кэша — async-варианты
+                parent = posixpath.dirname(folder_path)
+                await ainvalidate_folder(parent, meta_cache)
+                await ainvalidate_path(folder_path, meta_cache)
+                return True
+            except Exception as e:
+                count += 1
+                logger.warning(
+                    f"Ошибка при создании папки {folder_path} на WebDAV! ({e}) "
+                    f"Попытка {count}/2"
+                )
+                await asyncio.sleep(1)
+
+        logger.critical(f"Не удалось создать папку {folder_path}")
+        return False
+
+    except Exception as e:
+        logger.error(f"Ошибка при проверке/создании папки {folder_path}: {e}")
+        return False
+
+
 def create_folder_if_not_exists(client, folder_path):
     """
     Проверяем существование папки и создаем её, если она отсутствует.
