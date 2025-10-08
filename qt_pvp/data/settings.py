@@ -1,11 +1,14 @@
-from pathlib import Path
+import importlib.util, os
 import configparser
 import posixpath
-import os
 import re
 
+_top_pkg = (__package__ or "qt_pvp").split(".", 1)[0]
+spec = importlib.util.find_spec(_top_pkg)
+if not spec or not spec.origin:
+    raise RuntimeError(f"Не найден пакет {_top_pkg}")
+CUR_DIR = os.path.dirname(spec.origin)  # путь к .../qt_pvp
 
-CUR_DIR = str(Path(__file__).resolve().parents[1])
 OUTPUT_FOLDER = os.path.join(CUR_DIR, "output")
 INPUT_FOLDER = os.path.join(CUR_DIR, "input")
 TESTS_FOLDER = os.path.join(CUR_DIR, "tests")
