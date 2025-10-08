@@ -315,11 +315,25 @@ def get_interest_video_cloud_path(interest_name, dest_directory=settings.CLOUD_P
 
 
 async def check_if_interest_video_exists(interest_name: str) -> bool:
-    interest_video_name = get_interest_video_cloud_path(interest_name, dest_directory=settings.CLOUD_PATH)
+    """
+    Проверяет наличие видео (.mp4) в папке интереса.
+    Если конкретный файл не найден, то ищет любой *.mp4 в папке.
+    """
     try:
-        return await cached_check(client, interest_video_name)
-    except Exception:
+        # 1. Получаем путь до папки интереса
+        _, _, interest_folder_path = get_interest_folder_path(interest_name, dest_directory=settings.CLOUD_PATH)
+
+        # 3. Если не найден — ищем любой mp4-файл в этой папке
+        items = await cached_list(client, interest_folder_path)
+        for x in items:
+            if x.lower().endswith(".mp4"):
+                return True
         return False
+
+    except Exception as e:
+        logger.warning(f"[check_if_interest_video_exists] Ошибка проверки {interest_name}: {e}")
+        return False
+
 
 
 async def _frame_exists_cloud_async(folder: str, channel_id: int) -> bool:

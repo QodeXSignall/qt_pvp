@@ -217,8 +217,8 @@ class Main:
                 )
 
                 # Переименовываем название видео с интересом
-                new_video_name = main_funcs.rename_file_on_disk(channels_files_dict[chanel_id], interest_name)
-                channels_files_dict[chanel_id] = new_video_name
+                #new_video_name = main_funcs.rename_file_on_disk(channels_files_dict[chanel_id], interest_name)
+                #channels_files_dict[chanel_id] = new_video_name
 
                 # 5) если надо — выгружаем «полный» клип в облако (только для chanel_id)
                 full_clip_path = None
