@@ -171,7 +171,7 @@ class Main:
                 if nearby_point:
                     logger.info(f"{reg_id}: Пропускаем интерес {interest_name}, "
                                 f"интерес зафиксирован рядом с точкой игнора - {nearby_point}")
-                    return
+                    return None
 
                 logger.info(f"{reg_id}: Начинаем работу с интересом {interest_name}")
 
@@ -219,6 +219,10 @@ class Main:
                     f"Итого каналы: {final_channels_to_download}"
                 )
 
+                if not final_channels_to_download:
+                    logger.info("Нечего скачивать, все материалы уже есть в облаке.")
+                    return None
+
                 # 4) скачиваем по одному клипу на канал
                 channels_files_dict = await cms_api.download_single_clip_per_channel(
                     jsession=self.jsession,
@@ -227,16 +231,12 @@ class Main:
                     channels=final_channels_to_download
                 )
 
-                # Переименовываем название видео с интересом
-                #new_video_name = main_funcs.rename_file_on_disk(channels_files_dict[chanel_id], interest_name)
-                #channels_files_dict[chanel_id] = new_video_name
-
                 # 5) если надо — выгружаем «полный» клип в облако (только для chanel_id)
                 full_clip_path = None
                 if not interest_video_exists:
                     full_clip_path = channels_files_dict.get(chanel_id)
                     if full_clip_path:
-                         await self.upload_interest_video_cloud(
+                         full_clip_upload_status = await self.upload_interest_video_cloud(
                             reg_id=reg_id,
                             interest_name=interest_name,
                             video_path=full_clip_path,
@@ -252,48 +252,47 @@ class Main:
                 )
 
                 # 6) извлекаем кадры из КАЖДОГО скачанного клипа и выгружаем их
-                if settings.config.getboolean("General", "pics_before_after"):
-                    upload_status = await self.process_frames_before_after(
-                        reg_id, interest, channels_files_dict  # ← передаём словарь!!!
-                    )
-                    logger.info(f"Результат загрузки изображений: {upload_status}")
-                    # 7) чистим локальные клипы (кроме «полного» по нужному каналу)
-                    removed = cms_api.delete_videos_except(
-                        videos_by_channel=channels_files_dict,
-                        keep_channel_id=chanel_id if not interest_video_exists else None
-                    )
+                upload_status = await self.process_frames_before_after(
+                    reg_id, interest, channels_files_dict  # ← передаём словарь!!!
+                )
+                logger.info(f"Результат загрузки изображений: {upload_status}")
 
-                    # И только теперь можем удалить основное видео интереса
-                    if upload_status:
-                        if full_clip_path and upload_status:
-                            logger.info(f"{reg_id}: Загрузка видео интереса {interest_name} прошла успешно.")
-                            if settings.config.getboolean("General", "del_source_video_after_upload"):
-                                if os.path.exists(full_clip_path):
-                                    logger.info(
-                                        f"{reg_id}: Удаляем локальное видео интереса {interest_name}. ({full_clip_path}).")
-                                    os.remove(full_clip_path)
-                                interest_temp_folder = os.path.join(settings.TEMP_FOLDER,
-                                                                    interest_name)
-                                if os.path.exists(interest_temp_folder):
-                                    logger.info(
-                                        f"{reg_id}: Удаляем временную директорию интереса {interest_name}. ({interest_temp_folder}).")
-                                    shutil.rmtree(interest_temp_folder)
-                        else:
-                            logger.error(f"{reg_id}: Ошибка загрузки {interest_name}.")
-                    logger.info(f"{reg_id}: V2 завершено. Upload={upload_status}. Удалено видеофайлов: {removed}.")
-
-
-                await cloud_uploader.append_report_line_to_cloud_async(
-                    remote_folder_path=cloud_paths["date_folder_path"],
-                    created_start_time=created_start_time.strftime(self.TIME_FMT),
-                    created_end_time=datetime.datetime.now().strftime(self.TIME_FMT),
-                    file_name=interest_name
+                # 7) чистим локальные клипы (кроме «полного» по нужному каналу)
+                removed = cms_api.delete_videos_except(
+                    videos_by_channel=channels_files_dict,
+                    keep_channel_id=chanel_id if not interest_video_exists else None
                 )
 
-                # Маркируем интерес как обработанный (локально)
-                #main_funcs._save_processed(reg_id, interest_name)
+                if full_clip_path:
+                    if full_clip_upload_status:
+                        logger.info(
+                            f"{reg_id}: Удаляем локальное видео интереса {interest_name}. ({full_clip_path}).")
+                        if os.path.exists(full_clip_path):
+                            os.remove(full_clip_path)
+                    else:
+                        logger.error(f"{reg_id}: Не удалось загрузить видео интереса в {interest_name}.")
+                if after_channels_to_download or after_channels_to_download:
+                    if upload_status:
+                        interest_temp_folder = os.path.join(settings.TEMP_FOLDER,
+                                                            interest_name)
+                        if os.path.exists(interest_temp_folder):
+                            logger.info(
+                                f"{reg_id}: Удаляем временную директорию интереса {interest_name}. ({interest_temp_folder}).")
+                            shutil.rmtree(interest_temp_folder)
+                logger.info(f"{reg_id}: V2 завершено. Upload={upload_status}. Удалено видеофайлов: {removed}.")
 
-                return interest["end_time"]
+
+            await cloud_uploader.append_report_line_to_cloud_async(
+                remote_folder_path=cloud_paths["date_folder_path"],
+                created_start_time=created_start_time.strftime(self.TIME_FMT),
+                created_end_time=datetime.datetime.now().strftime(self.TIME_FMT),
+                file_name=interest_name
+            )
+
+            # Маркируем интерес как обработанный (локально)
+            #main_funcs._save_processed(reg_id, interest_name)
+
+            return interest["end_time"]
 
         # Стартуем задачи (сами ограничители внутри)
         tasks = [asyncio.create_task(_process_one_interest(it)) for it in interests]
