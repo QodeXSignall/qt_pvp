@@ -54,7 +54,7 @@ def find_nearby_name(
 
 
 def get_ignore_points(ignore_file_path=settings.IGNORE_POINTS_JSON):
-    return json.load(open(ignore_file_path))["ignore_points"]
+    return json.load(open(ignore_file_path, encoding="utf-8"))["ignore_points"]
 
 
 
