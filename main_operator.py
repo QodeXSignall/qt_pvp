@@ -164,6 +164,8 @@ class Main:
                 created_start_time = datetime.datetime.now()
                 interest_name = interest["name"]
 
+                logger.info(f"{reg_id}: Начинаем работу с интересом {interest_name}")
+
                 # Создаём пути в облаке под интерес
                 cloud_paths = await cloud_uploader.create_interest_folder_path_async(
                     name=interest_name,
@@ -234,6 +236,10 @@ class Main:
                     else:
                         logger.warning(
                             f"{reg_id}: Полный клип по каналу {chanel_id} не получен — пропускаем загрузку видео.")
+
+                await cloud_uploader.upload_dict_as_json_to_cloud(
+                    data=interest["report"],
+                    remote_folder_path=interest["cloud_folder"])
 
                 # 6) извлекаем кадры из КАЖДОГО скачанного клипа и выгружаем их
                 if settings.config.getboolean("General", "pics_before_after"):
