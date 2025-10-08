@@ -8,12 +8,12 @@ logger = logging.getLogger(__name__)
 # --- Resolve settings.states path -------------------------------------------------
 # Пытаемся взять путь к states из твоего settings. Если не выйдет — используем env/дефолт.
 
-from qt_pvp import settings as _settings
+from qt_pvp.data import settings as _settings
 
 if _settings and getattr(_settings, "states", None):
     STATES_PATH = _settings.states
 else:
-    STATES_PATH = os.environ.get("QT_PVP_STATES_PATH", os.path.abspath("states.json"))
+    STATES_PATH = os.environ.get("QT_PVP_STATES_PATH", os.path.abspath("data/states.json"))
 
 LOCK_PATH = STATES_PATH + ".lock"
 

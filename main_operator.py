@@ -4,7 +4,8 @@ from qt_pvp.cms_interface import cms_http
 from qt_pvp.cms_interface import cms_api
 from qt_pvp import cloud_uploader
 from qt_pvp.logger import logger
-from qt_pvp import settings
+from qt_pvp.data import settings
+from qt_pvp import geo_funcs
 import posixpath
 import traceback
 import datetime
@@ -22,6 +23,7 @@ class Main:
         self._global_interests_sem = asyncio.Semaphore(settings.config.getint("Process", "MAX_GLOBAL_INTERESTS"))
         self._per_device_sem = {}
         self._devices_sem = asyncio.Semaphore(settings.config.getint("Process", "MAX_DEVICES_CONCURRENT"))
+        self.ignore_points = geo_funcs.get_ignore_points()
 
     def _get_device_sem(self, reg_id):
         sem = self._per_device_sem.get(reg_id)
@@ -85,7 +87,7 @@ class Main:
                 tracks=tracks,
                 start_tracks_search_time=start_time_dt,
                 reg_id=reg_id,
-                alarms=prepared
+                alarms=prepared,
             )
 
             if isinstance(interests, dict) and "interests" in interests:
@@ -163,6 +165,13 @@ class Main:
             async with self._global_interests_sem, self._get_device_sem(reg_id):
                 created_start_time = datetime.datetime.now()
                 interest_name = interest["name"]
+                nearby_point =  geo_funcs.find_nearby_name(interest["report"]["geo"],
+                                              self.ignore_points,
+                                              settings.config.getint("Interests", "IGNORE_POINTS_TOLERANCE"))
+                if nearby_point:
+                    logger.info(f"{reg_id}: Пропускаем интерес {interest_name}, "
+                                f"интерес зафиксирован рядом с точкой игнора - {nearby_point}")
+                    return
 
                 logger.info(f"{reg_id}: Начинаем работу с интересом {interest_name}")
 

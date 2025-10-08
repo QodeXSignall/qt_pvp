@@ -1,6 +1,6 @@
 from datetime import timedelta
 from qt_pvp import functions
-from qt_pvp import settings
+from qt_pvp.data import settings
 import datetime
 import unittest
 

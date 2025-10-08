@@ -2,7 +2,7 @@ from typing import Optional, Dict, Any, List, Tuple
 from qt_pvp.functions import get_reg_info
 from datetime import datetime, timezone
 from qt_pvp.logger import logger
-from qt_pvp import settings
+from qt_pvp.data import settings
 import datetime
 import functools
 import asyncio
@@ -162,7 +162,7 @@ def _cluster_merge_stationary(norm: list[dict], min_stop_kmh: float, merge_gap_s
 
 def _merge_or_append(loading_intervals, new_interval, epsilon_sec=30):
     """Если в списке уже есть интерес с тем же стартом (±epsilon) и тем же cargo_type — расширяем его конец и события."""
-    from datetime import datetime, timedelta
+    from datetime import datetime
     fmt = "%Y-%m-%d %H:%M:%S"
 
     new_start = datetime.strptime(new_interval["start_time"], fmt)

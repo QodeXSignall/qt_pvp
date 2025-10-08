@@ -1,4 +1,4 @@
-qt_pvp/states.json
+qt_pvp/data/states.json
 /temp/*
 venv/
 *.zip

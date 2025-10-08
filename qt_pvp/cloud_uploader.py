@@ -2,7 +2,7 @@ from qt_pvp.meta_cache import meta_cache
 from webdav3.client import Client
 from qt_pvp.logger import logger
 from urllib.parse import quote
-from qt_pvp import settings
+from qt_pvp.data import settings
 import traceback
 import posixpath
 import requests

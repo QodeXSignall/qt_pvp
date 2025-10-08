@@ -4,7 +4,7 @@ from qt_pvp import functions as core_funcs
 from qt_pvp.cms_interface import cms_http
 from qt_pvp.cms_interface import limits
 from qt_pvp.logger import logger
-from qt_pvp import settings
+from qt_pvp.data import settings
 from httpx import Response
 import subprocess
 import datetime
@@ -268,7 +268,6 @@ async def get_alarms_async(jsession: str, device_id: str, begin_time: str, end_t
         client = cms_http.get_cms_async_client()
         return await client.get(url, params=params)
 
-import aiohttp
 
 @functions.cms_data_get_decorator_async()
 async def execute_download_task(jsession, download_task_url: str, reg_id):

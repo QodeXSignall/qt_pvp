@@ -1,5 +1,5 @@
 # limits.py
-from qt_pvp.settings import config
+from qt_pvp.data.settings import config
 from qt_pvp.logger import logger
 from typing import Dict
 import asyncio
