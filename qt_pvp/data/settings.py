@@ -1,9 +1,11 @@
+from pathlib import Path
 import configparser
 import posixpath
 import os
 import re
 
-CUR_DIR = os.path.dirname(os.path.abspath(__file__))
+
+CUR_DIR = str(Path(__file__).resolve().parents[1])
 OUTPUT_FOLDER = os.path.join(CUR_DIR, "output")
 INPUT_FOLDER = os.path.join(CUR_DIR, "input")
 TESTS_FOLDER = os.path.join(CUR_DIR, "tests")
