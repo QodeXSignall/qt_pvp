@@ -31,6 +31,18 @@ def _default_new_reg_info(plate=None):
         "plate": plate,
     }
 
+def rename_file_on_disk(path: str, new_name: str) -> str:
+    """
+    Переименовывает файл по указанному пути в новое имя.
+    Возвращает новый путь.
+    """
+    directory = os.path.dirname(path)
+    new_path = os.path.join(directory, new_name)
+    os.rename(path, new_path)
+    return new_path
+
+
+
 def unzip_archives_in_directory(input_dir, output_dir):
     # Проверка существования входящей директории
     logger.debug(f'Распаковка {input_dir} в {output_dir}')
