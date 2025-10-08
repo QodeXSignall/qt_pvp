@@ -170,7 +170,7 @@ class Main:
                                               settings.config.getint("Interests", "IGNORE_POINTS_TOLERANCE"))
                 if nearby_point:
                     logger.info(f"{reg_id}: Пропускаем интерес {interest_name}, "
-                                f"интерес зафиксирован рядом с точкой игнора - {nearby_point}")
+                                f"интерес зафиксирован рядом {interest['report']['geo']}с точкой игнора - {nearby_point}")
                     return None
 
                 logger.info(f"{reg_id}: Начинаем работу с интересом {interest_name}")

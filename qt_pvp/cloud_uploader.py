@@ -377,6 +377,7 @@ async def _frame_exists_cloud_async(folder: str, channel_id: int) -> bool:
         return False
     except Exception:
         # в случае ошибки не кэшируем False, пусть повторит
+        print("ERROR", traceback.format_exc())
         return False
 
 
