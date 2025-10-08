@@ -17,6 +17,41 @@ import os
 LIST_TTL  = getattr(settings, "WEBDAV_LIST_TTL", 20)   # сек
 CHECK_TTL = getattr(settings, "WEBDAV_CHECK_TTL", 60)  # сек
 
+async def aupload_dict_as_json_to_cloud(data: dict,
+                                        remote_folder_path: str,
+                                        filename: str = "report.json") -> bool:
+    """
+    Полностью async: без временных файлов, с корректной инвалидацией кэша.
+    """
+    try:
+        # гарантируем папку (async-вариант!)
+        ok = await acreate_folder_if_not_exists(client, remote_folder_path)
+        if not ok:
+            return False
+
+        # собираем JSON в память
+        payload = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+        remote_file_path = posixpath.join(remote_folder_path, filename)
+
+        # грузим байты через PUT (в thread, чтобы не блокировать loop)
+        ok = await asyncio.to_thread(
+            upload_bytes_to_cloud,
+            client,
+            payload,
+            remote_file_path,
+            "application/json; charset=utf-8",
+        )
+        if ok:
+            # корректная async-инвалидация
+            await ainvalidate_folder(remote_folder_path, meta_cache)
+            await ainvalidate_path(remote_file_path, meta_cache)
+        return ok
+
+    except Exception as e:
+        logger.error(f"[JSON-UPLOAD] Ошибка выгрузки {filename} в {remote_folder_path}: {e}")
+        return False
+
+
 def upload_bytes_to_cloud(client, data: bytes, remote_path: str, content_type: str = "application/octet-stream",
                           retries: int = 4, base_delay: float = 0.8) -> bool:
     """

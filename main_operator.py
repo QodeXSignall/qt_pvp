@@ -237,9 +237,10 @@ class Main:
                         logger.warning(
                             f"{reg_id}: Полный клип по каналу {chanel_id} не получен — пропускаем загрузку видео.")
 
-                await cloud_uploader.upload_dict_as_json_to_cloud(
+                await cloud_uploader.aupload_dict_as_json_to_cloud(
                     data=interest["report"],
-                    remote_folder_path=interest["cloud_folder"])
+                    remote_folder_path=interest["cloud_folder"]
+                )
 
                 # 6) извлекаем кадры из КАЖДОГО скачанного клипа и выгружаем их
                 if settings.config.getboolean("General", "pics_before_after"):
