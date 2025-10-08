@@ -140,9 +140,9 @@ class Main:
                     datetime.datetime.strptime(start_time, TIME_FMT) +
                     datetime.timedelta(seconds=max_span)
             ).strftime(TIME_FMT)
-        #else:
-        #    logger.debug(f"{reg_id}. Time difference is too short ({time_difference} сек.)")
-        #    return
+        else:
+            logger.debug(f"{reg_id}. Time difference is too short ({time_difference} сек.)")
+            return
 
         logger.info(f"{reg_id} Начало: {start_time}, Конец: {end_time}")
 
