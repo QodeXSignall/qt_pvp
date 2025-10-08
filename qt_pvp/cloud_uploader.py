@@ -339,15 +339,6 @@ def parse_interest_name(name: str):
     gd = m.groupdict()
     return gd["plate"], gd["date"], gd["start"], gd["end"]
 
-def parse_filename(filename: str):
-    plate, date_str, _, _ = parse_interest_name(filename)
-    return plate, date_str
-
-def get_interest_video_cloud_path(interest_name, dest_directory=settings.CLOUD_PATH):
-    registr_folder, date_folder_path, interest_folder_path = get_interest_folder_path(interest_name, dest_directory)
-    interest_video_name = posixpath.join(interest_folder_path, f"{interest_name}.mp4")
-    return interest_video_name
-
 
 async def check_if_interest_video_exists(interest_name: str) -> bool:
     """
@@ -537,7 +528,8 @@ def get_interest_folder_path(interest_name, dest_directory):
     plate, date_str, _, _ = parse_interest_name(interest_name)
     registr_folder = posixpath.join(dest_directory, plate)
     date_folder_path = posixpath.join(registr_folder, date_str)
-    interest_folder_path = posixpath.join(date_folder_path, os.path.splitext(os.path.basename(interest_name))[0])
+    interest_folder_path = posixpath.join(
+        date_folder_path, os.path.basename(interest_name).rstrip("/"))
     return registr_folder, date_folder_path, interest_folder_path
 
 
