@@ -168,7 +168,7 @@ class Main:
                                               settings.config.getint("Interests", "IGNORE_POINTS_TOLERANCE"))
                 if nearby_point:
                     logger.info(f"{reg_id}: Пропускаем интерес {interest_name}, "
-                                f"интерес зафиксирован рядом {interest['report']['geo']}с точкой игнора - {nearby_point}")
+                                f"интерес зафиксирован рядом {interest['report']['geo']} с точкой игнора - {nearby_point}")
                     return None
 
                 logger.info(f"{reg_id}: Начинаем работу с интересом {interest_name}")
@@ -327,7 +327,7 @@ class Main:
         if end_times:
             new_last = max(end_times)
         else:
-            new_last = start_time  # Повторяем снова, пока не получим данные
+            new_last = end_times  # Повторяем снова, пока не получим данные
         #main_funcs.save_new_reg_last_upload_time(reg_id, new_last)
         main_funcs.save_new_reg_last_upload_time(reg_id, new_last)
         logger.info(

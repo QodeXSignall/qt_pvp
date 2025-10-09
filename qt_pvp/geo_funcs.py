@@ -58,3 +58,6 @@ def get_ignore_points(ignore_file_path=settings.IGNORE_POINTS_JSON):
 
 
 
+if __name__ == "__main__":
+    res = find_nearby_name("53.656833,55.959151",get_ignore_points(), 50)
+    print(res)
