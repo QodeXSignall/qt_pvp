@@ -1,4 +1,4 @@
-from typing import Iterable, List, Dict, Tuple
+from typing import Iterable, List, Dict, Tuple, Any
 from qt_pvp.cms_interface import functions
 from qt_pvp import functions as core_funcs
 from qt_pvp.cms_interface import cms_http
@@ -255,19 +255,109 @@ async def get_device_status_async(jsession: str, device_id: str) -> Response:
         return await client.get(url, params=params)
 
 @functions.cms_data_get_decorator_async()
-async def get_alarms_async(jsession: str, device_id: str, begin_time: str, end_time: str) -> Response:
-    url = f"{settings.cms_host}/StandardApiAction_queryAlarmDetail.action"
-    params = {
+async def get_device_alarm_page_async(
+    jsession: str,
+    device_id: str,
+    begin_time: str,
+    end_time: str,
+    arm_types: str = "19,20,69,70",
+    page: int | None = None,
+    page_records: int | None = None,
+) -> cms_http.httpx.Response:
+    """
+    Запрос одной страницы алармов StandardApiAction_queryAlarmDetail.action
+
+    Параметры пагинации:
+      - currentPage: 1..N
+      - pageRecords: кол-во записей на страницу (по умолчанию у CMS 10)
+    """
+    params: dict[str, Any] = {
         "jsession": jsession,
         "devIdno": device_id,
         "begintime": begin_time,
         "endtime": end_time,
-        "armType": "19,20,69,70",
+        "armType": arm_types,
     }
-    async with limits.get_cms_global_sem():
-        client = cms_http.get_cms_async_client()
-        return await client.get(url, params=params)
+    if page is not None:
+        params["currentPage"] = page
+    if page_records is not None:
+        params["pageRecords"] = page_records
 
+    url = f"{settings.cms_host}/StandardApiAction_queryAlarmDetail.action"
+
+    async with limits.get_cms_global_sem():
+        async with limits.get_device_sem(device_id):
+            client = cms_http.get_cms_async_client()
+            return await client.get(url, params=params)
+
+
+async def get_device_alarm_all_pages_async(
+    jsession: str,
+    device_id: str,
+    begin_time: str,
+    end_time: str,
+    arm_types: str = "19,20,69,70",
+    page_records: int = 200,
+) -> list[dict]:
+    """
+    Возвращает список JSON-страниц (как у get_device_track_all_pages_async).
+    Страница = dict с ключами "alarms", "pagination", "result", ...
+
+    Использует параллельную догрузку остальных страниц через limits.get_pages_sem().
+    """
+    # 1) Первая страница — чтобы узнать totalPages
+    first = await get_device_alarm_page_async(
+        jsession, device_id, begin_time, end_time, arm_types,
+        page=None,  # пусть сервер подставит 1 по умолчанию
+        page_records=page_records
+    )
+    first.raise_for_status()
+    data = first.json()
+    pages = int((data.get("pagination") or {}).get("totalPages", 1)) or 1
+
+    results: list[dict] = [data]
+    if pages > 1:
+        async def _fetch(p: int) -> dict:
+            async with limits.get_pages_sem():
+                r = await get_device_alarm_page_async(
+                    jsession, device_id, begin_time, end_time, arm_types,
+                    page=p, page_records=page_records
+                )
+                r.raise_for_status()
+                return r.json()
+
+        tasks = [asyncio.create_task(_fetch(p)) for p in range(2, pages + 1)]
+        results.extend(await asyncio.gather(*tasks))
+
+    return results
+
+
+def flatten_alarms_pages(pages: list[dict]) -> list[dict]:
+    """
+    Удобный хелпер: склеить все "alarms" из списка страниц,
+    с лёгкой дедупликацией по (guid or (atp, stm, etm, chn)).
+    """
+    merged: list[dict] = []
+    seen: set[tuple] = set()
+
+    for page in pages:
+        for a in (page.get("alarms") or []):
+            key = (
+                a.get("guid")
+                or (
+                    a.get("atp"),
+                    a.get("stm"),
+                    a.get("etm"),
+                    a.get("chn") or a.get("channel") or 0,
+                )
+            )
+            if key not in seen:
+                seen.add(key)
+                merged.append(a)
+
+    # Отсортируем по началу/концу (UTC сек)
+    merged.sort(key=lambda x: (x.get("stm", 0), x.get("etm", 0)))
+    return merged
 
 @functions.cms_data_get_decorator_async()
 async def execute_download_task(jsession, download_task_url: str, reg_id):
@@ -279,13 +369,14 @@ async def execute_download_task(jsession, download_task_url: str, reg_id):
             return await client.get(download_task_url)
 
 
-async def wait_and_get_dwn_url(jsession, download_task_url, reg_id, poll_interval=1.0, timeout=1800.0):
-    logger.info(f"{reg_id}. Загрузка видео...")
+async def wait_and_get_dwn_url(jsession, download_task_url, reg_id, poll_interval=1.0, timeout=1800.0,
+                               interest_name:str = "ND", channel_id:int = 0):
+    logger.info(f"{reg_id}:{interest_name} ch{channel_id}  Загрузка видео...")
     started = time.monotonic()
     count = 0
     while True:
         if time.monotonic() - started > timeout:
-            raise TimeoutError(f"{reg_id}: download task timed out after {timeout}s")
+            raise TimeoutError(f"{reg_id}:{interest_name} ch{channel_id}  download task timed out after {timeout}s")
 
         response = await execute_download_task(jsession=jsession, download_task_url=download_task_url, reg_id=reg_id)
         response_json = response.json()
@@ -297,16 +388,16 @@ async def wait_and_get_dwn_url(jsession, download_task_url, reg_id, poll_interva
         dph = old.get("dph")
 
         if result == 11 and dph:
-            logger.info(f"{reg_id}. Загрузка видео завершена!")
+            logger.info(f"{reg_id}:{interest_name} ch{channel_id} . Загрузка видео завершена!")
             logger.debug(f"Get path: {dph}")
             return dph
         if result == 32:
-            logger.warning(f"{reg_id}. Устройство отключено! 32")
+            logger.warning(f"{reg_id}:{interest_name} ch{channel_id} . Устройство отключено! 32")
             raise DeviceOfflineError
 
         count += 1
         if count % 60 == 0:
-            logger.info(f"{reg_id}. Все еще грузится: {response_json}. Уже {count} сек.")
+            logger.info(f"{reg_id}:{interest_name} ch{channel_id} . Все еще грузится: {response_json}. Уже {count} сек.")
         await asyncio.sleep(poll_interval)
 
 
@@ -320,6 +411,7 @@ async def download_video(
     start_sec: int,
     end_sec: int,
     adjustment_sequence: Iterable[int] = (0, 30, 60, 90),
+    interest_name: str = "ND",
 ):
     """
     Правка: при result=22 ('device no response') НЕ двигаем окно.
@@ -347,7 +439,7 @@ async def download_video(
         cur_end   = min(end_limit,   base_end + delta)
 
         logger.debug(
-            f"{reg_id}: попытка {i}/{len(adj)} — window=[{cur_start}..{cur_end}] "
+            f"{reg_id}:{interest_name} ch{channel_id} попытка {i}/{len(adj)} — window=[{cur_start}..{cur_end}] "
             f"(base=[{base_start}..{base_end}], Δ={delta})"
         )
 
@@ -368,7 +460,7 @@ async def download_video(
                     break
                 except Exception as e:
                     logger.warning(
-                        f"{reg_id}: JSON parse failed on window [{cur_start}..{cur_end}]: {e}; "
+                        f"{reg_id}:{interest_name} ch{channel_id} JSON parse failed on window [{cur_start}..{cur_end}]: {e}; "
                         f"retry same delta"
                     )
                     await asyncio.sleep(2)
@@ -382,23 +474,23 @@ async def download_video(
             files = response_json.get("files") or []
 
             logger.debug(
-                f"{reg_id}: get_video result={result}, msg={message!r}, files={len(files)}"
+                f"{reg_id}:{interest_name} ch{channel_id} get_video result={result}, msg={message!r}, files={len(files)}"
             )
 
             # устройство реально офлайн — выходим вверх по стеку
             if result == 32 and "Device is not online" in message:
-                logger.warning(f"{reg_id}: устройство офлайн")
+                logger.warning(f"{reg_id}:{interest_name} ch{channel_id}  устройство офлайн")
                 raise DeviceOfflineError(message or "Device is not online!")
 
             if result == 23 and "device offline" in message:
-                logger.warning(f"{reg_id}: устройство офлайн")
+                logger.warning(f"{reg_id}:{interest_name} ch{channel_id}  устройство офлайн")
                 raise DeviceOfflineError(message or "Device is not online!")
 
             # наш кейс: устройство «не ответило» — НЕ двигаем окно, повторяем то же
             if result == 22 and "device no response" in message.lower():
                 if no_resp_attempt < MAX_NO_RESPONSE_RETRIES:
                     logger.debug(
-                        f"{reg_id}: device no response — retry same window "
+                        f"{reg_id}:{interest_name} ch{channel_id} device no response — retry same window "
                         f"[{cur_start}..{cur_end}] in {backoff:.1f}s "
                         f"({no_resp_attempt+1}/{MAX_NO_RESPONSE_RETRIES})"
                     )
@@ -408,7 +500,7 @@ async def download_video(
                     continue  # ВАЖНО: остаёмся на том же delta, не расширяем окно
                 else:
                     logger.warning(
-                        f"{reg_id}: device no response — exhausted retries on the SAME window "
+                        f"{reg_id}:{interest_name} ch{channel_id} device no response — exhausted retries on the SAME window "
                         f"[{cur_start}..{cur_end}]; move to next delta"
                     )
                     # выходим из while -> перейдём к следующему delta
@@ -454,6 +546,7 @@ async def download_single_clip_per_channel(
     TIME_FMT = "%Y-%m-%d %H:%M:%S"
     dt_start = datetime.datetime.strptime(interest["photo_before_timestamp"], TIME_FMT)
     dt_end   = datetime.datetime.strptime(interest["photo_after_timestamp"],   TIME_FMT)
+    interest_name = interest["name"]
 
     start_sec = dt_start.hour * 3600 + dt_start.minute * 60 + dt_start.second
     end_sec   = dt_end.hour   * 3600 + dt_end.minute   * 60 + dt_end.second
@@ -472,6 +565,7 @@ async def download_single_clip_per_channel(
             start_sec=start_sec,
             end_sec=end_sec,
             adjustment_sequence=(0, 5, 10, 15, 30),
+            interest_name=interest_name
         )  # уже есть в проекте  :contentReference[oaicite:1]{index=1}
 
         if not videos_paths:
@@ -484,14 +578,14 @@ async def download_single_clip_per_channel(
         # конкат в один файл (mp4) тем же методом, что используешь для интересов
         merged_path = os.path.join(interest_tmp_dir, f"ch{ch}_merged.mp4")
         try:
-            await asyncio.to_thread(core_funcs.concatenate_videos, videos_paths, merged_path)  # :contentReference[oaicite:2]{index=2}
+            await asyncio.to_thread(core_funcs.concatenate_videos, videos_paths, merged_path, reg_id, interest_name)  # :contentReference[oaicite:2]{index=2}
             for video_path in videos_paths:
                 if os.path.exists(video_path):
-                    logger.debug(f"{reg_id}. Удаляем исходный файл до конкатенации {video_path}")
+                    logger.debug(f"{reg_id}: {interest_name} Удаляем исходный файл до конкатенации {video_path}")
                     os.remove(video_path)
             return ch, merged_path
         except Exception as e:
-            logger.error(f"{reg_id}: ch={ch} concat failed: {e}")
+            logger.error(f"{reg_id}: {interest_name} ch={ch} concat failed: {e}")
             return ch, None
 
     tasks = [asyncio.create_task(_one_channel(ch)) for ch in channels]

@@ -70,19 +70,17 @@ class Main:
 
             tracks_task = asyncio.create_task(cms_api.get_device_track_all_pages_async(
                 self.jsession, reg_id, start_time, stop_time))
-            alarms_task = asyncio.create_task(cms_api.get_alarms_async(self.jsession, reg_id, start_time, stop_time))
+            alarms_task = asyncio.create_task(cms_api.get_device_alarm_all_pages_async(self.jsession, reg_id, start_time, stop_time))
             tracks, alarm_reports = await asyncio.gather(tracks_task, alarms_task)
             tracks = [t for page in tracks for t in (page.get("tracks") or [])]
-            alarm_reports = alarm_reports.json()
 
             prepared = cms_api_funcs.prepare_alarms(
-                raw_alarms=alarm_reports.get("alarms", []),
+                raw_alarms = alarm_reports[0].get("alarms") or [],
                 reg_cfg=reg_info,
                 allowed_atp=frozenset({19, 20, 21, 22}),
                 min_stop_speed_kmh=settings.config.getint("Interests", "MIN_STOP_SPEED") / 10.0,
                 merge_gap_sec=15
             )
-
             interests = cms_api_funcs.find_interests_by_lifting_switches(
                 tracks=tracks,
                 start_tracks_search_time=start_time_dt,
@@ -157,7 +155,7 @@ class Main:
 
         logger.info(f"{reg_id}: Найдено {len(interests)} интересов")
         interests = main_funcs.merge_overlapping_interests(interests)
-        interests = main_funcs.filter_already_processed(reg_id, interests)
+        #interests = main_funcs.filter_already_processed(reg_id, interests)
         logger.info(f"{reg_id}: К запуску {len(interests)} интересов (после фильтра processed).")
 
         async def _process_one_interest(interest: dict) -> str | None:
@@ -402,11 +400,14 @@ class Main:
             cloud_uploader.upload_file, video_path, cloud_folder)
         return upload_status
 
+    async def login(self):
+        login_result = await cms_api.login()
+        self.jsession = login_result.json()["jsession"]
+
     async def mainloop(self):
         logger.info("Mainloop has been launched with success.")
         self._running: set[asyncio.Task] = set()
-        login_result = await cms_api.login()
-        self.jsession = login_result.json()["jsession"]
+        await self.login()
 
         while True:
             # важно: get_devices_online в thread, чтобы не блокировать loop

@@ -34,6 +34,7 @@ def get_interest_from_track(track, start_time: str, end_time: str,
                 f"{end_time_datetime.hour:02d}."
                 f"{end_time_datetime.minute:02d}."
                 f"{end_time_datetime.second:02d}",
+        "reg_id": track['vid'],
         "beg_sec": seconds_since_midnight(start_time_datetime),
         "end_sec": seconds_since_midnight(end_time_datetime),
         "year": start_time_datetime.year,
@@ -79,7 +80,7 @@ def _parse_alarm_time(a: Dict[str, Any], key_ms: str, key_str: str) -> Tuple[dat
 
     return None, None
 
-def _atp_to_io_index(atp: int, atp_str: Optional[str]) -> Optional[int]:
+def _atp_to_io_index(atp_str: Optional[str]) -> Optional[int]:
     # Пример: atp=22, atpStr='IO_4报警' → вернём 4
     if atp_str and "IO_" in atp_str:
         try:
@@ -236,14 +237,10 @@ def prepare_alarms(raw_alarms: List[Dict[str, Any]],
             fb_after = 30  # можно взять из settings.config.getint("Interests", "AFTER_FALLBACK_SEC", fallback=30)
             end_dt = start_dt + datetime.timedelta(seconds=fb_after)
             end_str = end_dt.strftime(settings.TIME_FMT)
-            try:
-                logger.debug(f"[ALARMS] etm отсутствует, используем fallback {fb_after}с для guid={a.get('guid')}")
-            except NameError:
-                pass
         ssp_kmh = (a.get("ssp") or 0) / 10.0
         esp_kmh = (a.get("esp") or 0) / 10.0
 
-        io_idx = _atp_to_io_index(a.get("atp"), a.get("atpStr") or "")
+        io_idx = _atp_to_io_index(a.get("atpStr") or "")
         if io_idx == euro_alarm:
             cargo = "euro"
         elif kgo_alarm is not None and io_idx == kgo_alarm:
@@ -330,6 +327,7 @@ def find_interests_by_lifting_switches(
     euro_bit_idx = io_to_reg_map.get(euro_alarm_cfg, 23)
     kgo_bit_idx = io_to_reg_map.get(kgo_alarm_cfg, None) if kgo_alarm_cfg is not None else None
 
+
     # --- локальная утилита для быстрого поиска алармов в окне разрыва ---
     def _alarms_in_gap(prepared, gap_start_ts, gap_end_ts):
         """prepared == {"alarms": [...], "starts": [...]}"""
@@ -357,17 +355,18 @@ def find_interests_by_lifting_switches(
         track = tracks[i]
         next_track = tracks[i+1]
         cur_speed = track.get("sp")
+        t_curr_dt = track.get("gt")
+        t_next_dt = next_track.get("gt")
 
         # --- вычисление разрыва между текущим треком и следующим ---
-        t_curr = datetime.datetime.strptime(track["gt"], "%Y-%m-%d %H:%M:%S")
-        t_next = datetime.datetime.strptime(next_track["gt"], "%Y-%m-%d %H:%M:%S")
+        t_curr = datetime.datetime.strptime(t_curr_dt, "%Y-%m-%d %H:%M:%S")
+        t_next = datetime.datetime.strptime(t_next_dt, "%Y-%m-%d %H:%M:%S")
         gap_sec = (t_next - t_curr).total_seconds()
 
         GAP_THRESHOLD = settings.config.getint("Interests", "GAP_THRESHOLD_SEC", fallback=10)
 
         if gap_sec > GAP_THRESHOLD:
-            logger.debug(f"gap: {t_curr} → {t_next} = {gap_sec:.1f}s")
-            logger.debug(f"[TRACE] gt={track.get('gt')} sp={cur_speed}")
+            logger.debug(f"Обнаружен разрыв в треках: {t_curr} → {t_next} = {gap_sec:.1f}s")
 
         # === Новая вставка: обработка "разрыва" через алармы (если они переданы и подготовлены) ===
         if alarms and isinstance(alarms, dict) and "alarms" in alarms and "starts" in alarms and gap_sec > GAP_THRESHOLD:
@@ -376,18 +375,17 @@ def find_interests_by_lifting_switches(
             gap_alarms = _alarms_in_gap(alarms, gap_start_ts, gap_end_ts)
 
             if gap_alarms:
-                logger.debug(f"{reg_id}:[ALARM GAP] Разрыв {track['gt']} → {next_track['gt']} ({int(gap_sec)}s), найдено алармов: {len(gap_alarms)}")
+                logger.debug(f"{reg_id}:[ALARM GAP] Разрыв {t_curr_dt} → {t_next_dt} ({int(gap_sec)}s), найдено алармов: {len(gap_alarms)}")
 
             for a in gap_alarms:
+                alarm_dt = a.get("start_dt")
+                alarm_ts_str = a.get("start_str")
+                #gap_start_dt = datetime.datetime.strptime(gap_start_ts, "%Y-%m-%d %H:%M:%S")
+
+                logger.info(f"{reg_id}: Обработка аларма в {alarm_ts_str}")
+
                 # Принимаем только «стоял в начале события» и известный тип груза
                 start_stopped = a.get("start_stopped")
-                if start_stopped is None:
-                    # подстраховка, если вдруг нет поля — считаем из ssp_kmh
-                    ssp_kmh = a.get("ssp_kmh")
-                    if ssp_kmh is None:
-                        ssp_kmh = (a.get("ssp") or 0) / 10.0
-                    min_stop_kmh = settings.config.getint("Interests", "MIN_STOP_SPEED") / 10.0
-                    start_stopped = ssp_kmh <= min_stop_kmh
 
                 if not start_stopped:
                     continue
@@ -397,37 +395,26 @@ def find_interests_by_lifting_switches(
                     continue
                 cargo_type_alarm = "КГО" if cargo_key == "kgo" else "Контейнер"
 
-                alarm_dt = a.get("start_dt")
-                alarm_ts_str = a.get("start_str")
-                if not alarm_dt:
-                    # подстраховка на случай, если передали raw-формат
-                    if a.get("bTimeStr"):
-                        alarm_dt = datetime.datetime.strptime(a["bTimeStr"], "%Y-%m-%d %H:%M:%S")
-                        alarm_ts_str = a["bTimeStr"]
-                    elif a.get("stm"):
-                        alarm_dt = datetime.datetime.fromtimestamp(a["stm"] / 1000.0)
-                        alarm_ts_str = alarm_dt.strftime("%Y-%m-%d %H:%M:%S")
-                    else:
-                        # если совсем нет времени — пропускаем
-                        continue
+                delta_last_track_to_alarm_seconds =  (alarm_dt - t_curr).total_seconds()
+                delta_alarm_to_first_track_seconds = (t_next - alarm_dt).total_seconds()
 
-                # ---- BEFORE: ищем остановку до события (как обычно), иначе fallback ----
-                time_before = find_first_stable_stop(tracks, i, alarm_dt, settings, first_interest,
-                                                     start_tracks_search_time)
-                if not time_before:
-                    logger.warning(f"{reg_id}:[BEFORE] Не найдена остановка до alarm {alarm_ts_str}")
-                    # fallback ДО: 120 c для КГО, иначе базовый sec_before
-                    fb_before = 30
-                    time_before = (alarm_dt - datetime.timedelta(seconds=fb_before)).strftime("%Y-%m-%d %H:%M:%S")
-                    logger.warning(f"{reg_id}: [BEFORE-FALLBACK] alarm-gap: {fb_before}с до {alarm_ts_str} => {time_before}")
+                if delta_last_track_to_alarm_seconds > 30:
+                    logger.warning(
+                        f"{reg_id}:[BEFORE] Пропуск поиска остановки — последний сохраненный трек до разрыва ({t_curr}) отстает от момента срабатывания ({alarm_dt}) на {delta_last_track_to_alarm_seconds:.1f}с.")
+                    time_before = (alarm_dt - datetime.timedelta(seconds=30)).strftime("%Y-%m-%d %H:%M:%S")
+                else:
+                    time_before = find_first_stable_stop(tracks, i, alarm_dt, settings, first_interest,
+                                                         start_tracks_search_time)
 
-                # ---- AFTER: стандартный поиск, иначе fallback от конца аларма ----
-                time_after, last_stop_idx = find_stop_after_lifting(tracks, i + 1, settings, logger)
-                if not time_after:
-                    logger.warning(f"{reg_id}: [FALLBACK AFTER] используем fallback для alarm {alarm_ts_str}")
+                if delta_alarm_to_first_track_seconds > 30:
+                    logger.warning(
+                        f"{reg_id}:[AFTER] Пропуск поиска движения — первый трек после разрыва ({t_next}) опережает момент срабатывания ({alarm_dt}) на {delta_alarm_to_first_track_seconds:.1f}с.")
                     end_dt = a.get("end_dt") or (alarm_dt + datetime.timedelta(seconds=sec_after))
                     fb_after = settings.config.getint("Interests", "AFTER_FALLBACK_SEC", fallback=30)
                     time_after = (end_dt + datetime.timedelta(seconds=fb_after)).strftime("%Y-%m-%d %H:%M:%S")
+                else:
+                    time_after, last_stop_idx = find_stop_after_lifting(tracks, i + 1, settings, logger)
+
 
                 # Сдвиг фото ПОСЛЕ
                 raw_time_after = datetime.datetime.strptime(time_after, "%Y-%m-%d %H:%M:%S")
@@ -574,7 +561,7 @@ def find_interests_by_lifting_switches(
             time_30_after = time_30_after_dt.strftime("%Y-%m-%d %H:%M:%S")
 
             if time_before and time_after:
-                logger.info(f"{reg_id}: [INTEREST] Интерес от {time_before} до {time_after}")
+                logger.info(f"{reg_id}: Интерес найден! {time_before} до {time_after}")
                 interval = get_interest_from_track(
                     tracks[-1],
                     start_time=time_before,

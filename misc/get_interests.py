@@ -1,19 +1,25 @@
 from qt_pvp import functions as main_funcs
 from main_operator import Main
+import asyncio
 
 
-REG_ID = "108411"
-START_TIME = "2025-08-17 05:32:04"
-#START_TIME = "2025-08-17 10:30:00"
-END_TIME = "2025-08-17 14:43:55"
-#END_TIME = "2025-08-17 10:40:00"
+REG_ID = "108410"
+START_TIME = "2025-10-08 07:01:04"
+END_TIME = "2025-10-08 07:05:55"
 
 
 inst = Main()
 reg_info = main_funcs.get_reg_info(reg_id=REG_ID)
-interests = inst.get_interests(reg_id=REG_ID, reg_info=reg_info, start_time=START_TIME, stop_time=END_TIME)
+async def local_get_interests_async():
+    await inst.login()
+    interests = await inst.get_interests_async(reg_id=REG_ID, reg_info=reg_info, start_time=START_TIME, stop_time=END_TIME)
+    interests = main_funcs.merge_overlapping_interests(interests)
+    print(len(interests))
+    for interest in interests:
+        print(interest)
 
-#for interest in interests:
-    #print(interest["name"])
+if __name__ == "__main__":
+    asyncio.run(local_get_interests_async())
+
 
 

@@ -3,6 +3,7 @@ from webdav3.client import Client
 from qt_pvp.logger import logger
 from urllib.parse import quote
 from qt_pvp.data import settings
+from qt_pvp import functions
 import traceback
 import posixpath
 import requests
@@ -325,21 +326,6 @@ def append_report_line_to_cloud(remote_folder_path: str, created_start_time: str
         return False
 
 
-def parse_interest_name(name: str):
-    """
-    Разбирает имя интереса вида:
-    "<PLATE>_YYYY.MM.DD HH.MM.SS-HH.MM.SS" (опц. расширение в конце).
-    Возвращает (plate, date_str, start_str, end_str).
-    Бросает ValueError при несоответствии.
-    """
-    base = os.path.basename(name)
-    m = settings._INTEREST_RE.match(base)
-    if not m:
-        raise ValueError(f"Invalid interest name format: {name!r}")
-    gd = m.groupdict()
-    return gd["plate"], gd["date"], gd["start"], gd["end"]
-
-
 async def check_if_interest_video_exists(interest_name: str) -> bool:
     """
     Проверяет наличие видео (.mp4) в папке интереса.
@@ -526,7 +512,7 @@ def delete_local_file(local_file_path):
 
 
 def get_interest_folder_path(interest_name, dest_directory):
-    plate, date_str, _, _ = parse_interest_name(interest_name)
+    plate, date_str, _, _ = functions.parse_interest_name(interest_name)
     registr_folder = posixpath.join(dest_directory, plate)
     date_folder_path = posixpath.join(registr_folder, date_str)
     interest_folder_path = posixpath.join(

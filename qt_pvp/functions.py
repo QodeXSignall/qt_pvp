@@ -88,7 +88,7 @@ def split_time_range_to_dicts(start_time, end_time, interval):
 
 
 # qt_pvp/functions.py
-def concatenate_videos(converted_files, output_abs_name):
+def concatenate_videos(converted_files, output_abs_name, reg_id, interest_name):
     concat_candidates = []
     for f in converted_files:
         if not f:
@@ -97,21 +97,19 @@ def concatenate_videos(converted_files, output_abs_name):
             if os.path.isfile(f) and os.path.getsize(f) > 0:
                 concat_candidates.append(f)
             else:
-                logger.error(f"[CONCAT] Файл отсутствует или пустой: {f}")
+                logger.error(f"{reg_id}: {interest_name} [CONCAT] Файл отсутствует или пустой: {f}")
         except OSError as e:
-            logger.error(f"[CONCAT] Ошибка доступа к файлу {f}: {e}")
+            logger.error(f"{reg_id}: {interest_name} [CONCAT] Ошибка доступа к файлу {f}: {e}")
 
     if len(concat_candidates) == 0:
-        raise FileNotFoundError("[CONCAT] Нет ни одного валидного входного файла — пропускаю интерес.")
+        raise FileNotFoundError(f"{reg_id}: {interest_name} [CONCAT] Нет ни одного валидного входного файла — пропускаю интерес.")
 
     if len(concat_candidates) == 1:
         # вместо ffmpeg — просто копия единственного файла как итог
         src = concat_candidates[0]
         os.makedirs(os.path.dirname(output_abs_name), exist_ok=True)
         shutil.copyfile(src, output_abs_name)
-        logger.debug(f"[CONCAT] Единственный файл — скопирован: {src} -> {output_abs_name}")
-        #logger.debug(f"Удаляем исходный файл ({src})")
-        #os.remove(src)
+        logger.debug(f"{reg_id}: {interest_name} [CONCAT] Единственный файл — скопирован: {src} -> {output_abs_name}")
         return
 
     # стандартная concat через ffmpeg
@@ -119,19 +117,19 @@ def concatenate_videos(converted_files, output_abs_name):
         os.path.dirname(output_abs_name),
         f"concat_list_{uuid.uuid4().hex}.txt"
     )
-    logger.debug(f"[CONCAT] Конкатенация файлов {concat_candidates}")
+    logger.debug(f"{reg_id}: {interest_name} [CONCAT] Конкатенация файлов {concat_candidates}")
     try:
         with open(concat_list_path, "w", encoding="utf-8") as f:
             for file in concat_candidates:
                 f.write(f"file '{file}'\n")
         cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
                "-i", concat_list_path, "-c", "copy", output_abs_name]
-        logger.debug(f"[CONCAT] Команда: {' '.join(cmd)}")
+        #logger.debug(f"{reg_id}: [CONCAT] Команда: {' '.join(cmd)}")
         # захватываем stderr для нормального логирования
         proc = subprocess.run(cmd, check=True, capture_output=True, text=True)
-        logger.debug(f"[CONCAT] Успех. Результат: {output_abs_name}")
+        logger.debug(f"{reg_id}: {interest_name} [CONCAT] Успех. Результат: {output_abs_name}")
     except subprocess.CalledProcessError as e:
-        logger.error(f"[CONCAT] ffmpeg упал: {e.stderr or e.stdout}")
+        logger.error(f"{reg_id}: {interest_name} [CONCAT] ffmpeg упал: {e.stderr or e.stdout}")
         raise
     finally:
         try:
@@ -424,10 +422,38 @@ def process_video_file(file_path, output_file_path):
     return file_path
 
 
+def parse_interest_name(name: str):
+    """
+    Разбирает имя интереса вида:
+    "<PLATE>_YYYY.MM.DD HH.MM.SS-HH.MM.SS" (опц. расширение в конце).
+    Возвращает (plate, date_str, start_str, end_str).
+    Бросает ValueError при несоответствии.
+    """
+    base = os.path.basename(name)
+    m = settings._INTEREST_RE.match(base)
+    if not m:
+        raise ValueError(f"Invalid interest name format: {name!r}")
+    gd = m.groupdict()
+    return gd["plate"], gd["date"], gd["start"], gd["end"]
+
+def build_interest_name(plate: str, date_str: str, start_str: str, end_str: str, ext: str | None = None) -> str:
+    """
+    Собирает имя интереса из частей:
+    (plate, date_str, start_str, end_str[, ext]) ->
+    "<PLATE>_YYYY.MM.DD HH.MM.SS-HH.MM.SS[.ext]"
+    """
+    # Базовая часть
+    name = f"{plate}_{date_str} {start_str}-{end_str}"
+    # Опциональное расширение (например, ".mp4" или ".zip")
+    if ext:
+        # убираем точку, если пользователь случайно передал ".mp4"
+        ext = ext.lstrip(".")
+        name = f"{name}.{ext}"
+    return name
+
 def merge_overlapping_interests(interests: List[dict]) -> List[dict]:
     if not interests:
         return []
-
     # Сортируем по началу
     sorted_interests = sorted(interests, key=lambda x: x['beg_sec'])
     merged = []
@@ -436,7 +462,9 @@ def merge_overlapping_interests(interests: List[dict]) -> List[dict]:
     for next_interest in sorted_interests[1:]:
         # Пересекаются, если начало следующего раньше конца текущего
         if next_interest['beg_sec'] <= current['end_sec']:
-            logger.info("Обнаружение пересечение интересов. Объединение...")
+            logger.info(
+                f"{current['reg_id']}: Обнаружение пересечение интересов {current['name']} и {next_interest['name']}. "
+                f"Объединение...")
             # Объединяем интервалы
             current['beg_sec'] = min(current['beg_sec'], next_interest['beg_sec'])
             current['end_sec'] = max(current['end_sec'], next_interest['end_sec'])
@@ -467,6 +495,14 @@ def merge_overlapping_interests(interests: List[dict]) -> List[dict]:
                 merged_switches.sort(key=lambda x: x['datetime'])
                 current['report']['switch_events'] = merged_switches
                 current['report']['switches_amount'] = len(merged_switches)
+
+            # Меняем имя интереса
+            plate, date, start, _ = parse_interest_name(current['name'])
+            _, _, _, end = parse_interest_name(next_interest['name'])
+            new_name = build_interest_name(plate, date, start, end)
+            current['name'] = new_name
+
+            logger.info(f"{current['reg_id']}: Объединенный интерес - {current['name']}")
         else:
             merged.append(current)
             current = next_interest.copy()
