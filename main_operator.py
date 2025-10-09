@@ -327,7 +327,7 @@ class Main:
         if end_times:
             new_last = max(end_times)
         else:
-            new_last = end_times  # Повторяем снова, пока не получим данные
+            new_last = end_time  # Повторяем снова, пока не получим данные
         #main_funcs.save_new_reg_last_upload_time(reg_id, new_last)
         main_funcs.save_new_reg_last_upload_time(reg_id, new_last)
         logger.info(
