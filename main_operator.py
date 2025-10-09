@@ -2,6 +2,7 @@ from qt_pvp.cms_interface import functions as cms_api_funcs
 from qt_pvp import functions as main_funcs
 from qt_pvp.cms_interface import cms_http
 from qt_pvp.cms_interface import cms_api
+from qt_pvp.cms_interface import limits
 from qt_pvp import cloud_uploader
 from qt_pvp.logger import logger
 from qt_pvp.data import settings

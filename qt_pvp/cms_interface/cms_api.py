@@ -450,11 +450,10 @@ async def download_video(
         while True:
             # --- две попытки на том же delta просто на случай кривого JSON ---
             for _ in range(2):
-                async with limits._get_video_sem_for(reg_id):
-                    response = await get_video(
-                        jsession, reg_id, cur_start, cur_end,
-                        year, month, day, channel_id
-                    )
+                response = await get_video(
+                    jsession, reg_id, cur_start, cur_end,
+                    year, month, day, channel_id
+                )
                 try:
                     response_json = response.json()
                     break
@@ -557,16 +556,17 @@ async def download_single_clip_per_channel(
 
     async def _one_channel(ch: int) -> Tuple[int, str | None]:
         # Скачиваем все куски на интервале, дальше сведём в один файл
-        videos_paths = await download_video(
-            jsession=jsession,
-            reg_id=reg_id,
-            channel_id=ch,
-            year=dt_start.year, month=dt_start.month, day=dt_start.day,
-            start_sec=start_sec,
-            end_sec=end_sec,
-            adjustment_sequence=(0, 5, 10, 15, 30),
-            interest_name=interest_name
-        )  # уже есть в проекте  :contentReference[oaicite:1]{index=1}
+        async with limits._get_video_sem_for(reg_id):
+            videos_paths = await download_video(
+                jsession=jsession,
+                reg_id=reg_id,
+                channel_id=ch,
+                year=dt_start.year, month=dt_start.month, day=dt_start.day,
+                start_sec=start_sec,
+                end_sec=end_sec,
+                adjustment_sequence=(0, 5, 10, 15, 30),
+                interest_name=interest_name
+            )  # уже есть в проекте  :contentReference[oaicite:1]{index=1}
 
         if not videos_paths:
             logger.warning(f"{reg_id}: ch={ch} клипы не получены.")
