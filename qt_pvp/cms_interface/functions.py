@@ -3,6 +3,7 @@ from qt_pvp.functions import get_reg_info
 from datetime import datetime, timezone
 from qt_pvp.logger import logger
 from qt_pvp.data import settings
+from bisect import bisect_left
 import datetime
 import functools
 import asyncio
@@ -672,6 +673,135 @@ def fallback_photo_after_time(tracks, last_switch_index, settings, logger=None):
 
 
 def find_first_stable_stop(
+    tracks,
+    start_index,
+    current_dt,
+    settings,
+    first_interest=False,
+    start_tracks_search_time=None,  # для совместимости
+):
+    """
+    Ищем первую (от конца) стабильную остановку перед срабатыванием,
+    устойчивую к кратковременным всплескам скорости.
+
+    Условия:
+    - Остановка: скорость <= MIN_STOP_SPEED, суммарная длительность низкой скорости >= MIN_STOP_DURATION_SEC.
+    - Подтверждение выхода из остановки: скорость >= MIN_MOVE_SPEED непрерывно (по времени) >= MIN_MOVE_DURATION_SEC.
+      Всплески короче этого порога считаем шумом и НЕ завершаем остановку.
+    """
+
+
+    logger.debug("Ищем движение и остановку до первого срабатывания концевика")
+
+    cfg = settings.config
+    cutoff_time = current_dt - datetime.timedelta(
+        seconds=cfg.getint("Interests", "MAX_LOOKBACK_SECONDS")
+    )
+    min_stop_speed = cfg.getint("Interests", "MIN_STOP_SPEED")
+    min_stop_duration_sec = cfg.getint("Interests", "MIN_STOP_DURATION_SEC")
+
+    # Новые (можно добавить в cfg; тут есть безопасные fallback)
+    min_move_speed = int(cfg.get("Interests", "MIN_MOVE_SPEED", fallback=str(min_stop_speed + 1)))
+    min_move_duration_sec = int(cfg.get("Interests", "MIN_MOVE_DURATION_SEC", fallback=str(min_stop_duration_sec)))
+
+    def ts(idx: int) -> datetime.datetime:
+        return datetime.datetime.strptime(tracks[idx]["gt"], "%Y-%m-%d %H:%M:%S")
+
+    def spd(idx: int) -> int:
+        return int(tracks[idx].get("sp") or 0)
+
+    if not tracks:
+        logger.warning("[ОСТАНОВКА НЕ НАЙДЕНА] пустой массив треков")
+        return None
+
+    # Ограничим окно поиска по cutoff_time и start_index
+    # найдём первый индекс, чей ts >= cutoff_time
+    # (линейный проход тоже подойдёт; этот — O(log N))
+    times = [ts(i) for i in range(len(tracks))]
+    start_window_idx = bisect_left(times, cutoff_time)
+    end_window_idx = max(0, min(start_index, len(tracks) - 1))
+    if start_window_idx > end_window_idx:
+        logger.warning("[ОСТАНОВКА НЕ НАЙДЕНА] окно пусто")
+        return None
+
+    # Скан вперёд по времени: start_window_idx..end_window_idx
+    stop_active = False
+    stop_start_i = None          # индекс начала текущей остановки (по низкой скорости)
+    stop_low_dur = 0.0           # суммарная длительность низкой скорости в текущей остановке (сек)
+
+    move_after_stop_dur = 0.0    # длительность подтверждённого движения (скорость >= min_move_speed) после остановки
+    candidate_start_gt = None    # старт последней валидной остановки (которую подтвердили движением)
+
+    prev_t = times[start_window_idx]
+
+    for i in range(start_window_idx, end_window_idx + 1):
+        t = times[i]
+        dt = (t - prev_t).total_seconds() if i > start_window_idx else 0.0
+        v = spd(i)
+
+        is_stop = (v <= min_stop_speed)
+        is_move_confirm = (v >= min_move_speed)
+
+        logger.debug(
+            f"[СКАН] i={i}, t={t}, v={v}, "
+            f"stop_active={stop_active}, stop_low_dur={stop_low_dur:.1f}, "
+            f"move_after_stop_dur={move_after_stop_dur:.1f}"
+        )
+
+        if is_stop:
+            # в зоне остановки — накапливаем низкоскоростную длительность
+            if not stop_active:
+                stop_active = True
+                stop_start_i = i
+                stop_low_dur = 0.0
+            stop_low_dur += dt
+            # Любая низкая скорость обнуляет «подтверждённое движение» (мы всё ещё в/вернулись в остановку)
+            move_after_stop_dur = 0.0
+
+        else:
+            # вне зоны остановки (скорость > min_stop_speed)
+            if stop_active:
+                # считаем «подтверждённое движение» только когда v >= min_move_speed
+                if is_move_confirm:
+                    move_after_stop_dur += dt
+                    # Если движение держится достаточно долго и сама остановка была достаточно длинной — фиксируем кандидат
+                    if move_after_stop_dur >= min_move_duration_sec and stop_low_dur >= min_stop_duration_sec:
+                        candidate_start_gt = tracks[stop_start_i]["gt"]
+                        logger.debug(
+                            f"[ДВИЖЕНИЕ ДО ОСТАНОВКИ] подтверждено: "
+                            f"stop_low_dur={stop_low_dur:.1f}s, move_dur={move_after_stop_dur:.1f}s, "
+                            f"start={candidate_start_gt}"
+                        )
+                        # Не выходим — нам нужен ближайший к концу окна кандидат.
+                else:
+                    # скорость > min_stop_speed, но < min_move_speed — не считаем как подтверждённое движение.
+                    # Это «полудвижение» сбрасывает таймер подтверждения.
+                    move_after_stop_dur = 0.0
+            else:
+                # мы ещё не встретили остановку — ничего не делаем
+                pass
+
+        prev_t = t
+
+    # На выходе выбираем наиболее позднего кандидата (если был подтверждён движением)
+    if candidate_start_gt is not None:
+        return candidate_start_gt
+
+    # Если подтверждённого движения не было, но мы закончили на реальной остановке — вернём её начало,
+    # сохраняя твою логику финальной проверки + догрузку.
+    if stop_active and stop_low_dur >= min_stop_duration_sec:
+        # Проверка "упёрлись в начало окна" для первого интереса -> нужна догрузка
+        if first_interest and stop_start_i == start_window_idx and times[start_window_idx] >= cutoff_time:
+            logger.debug("[ДОГРУЗКА] Серия достаточна, но упёрлись в начало окна и ещё не прошли cutoff — нужна догрузка")
+            return None
+        logger.debug(f"[ФИНАЛ] stop_low_dur={stop_low_dur:.0f}s, начало {tracks[stop_start_i]['gt']}")
+        return tracks[stop_start_i]["gt"]
+
+    logger.warning("[ОСТАНОВКА НЕ НАЙДЕНА]")
+    return None
+
+
+def find_first_stable_stop_depr(
     tracks,
     start_index,
     current_dt,
