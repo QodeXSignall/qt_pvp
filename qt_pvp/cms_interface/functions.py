@@ -405,7 +405,7 @@ def find_interests_by_lifting_switches(
                     time_before = (alarm_dt - datetime.timedelta(seconds=30)).strftime("%Y-%m-%d %H:%M:%S")
                 else:
                     time_before = find_first_stable_stop(tracks, i, alarm_dt, settings, first_interest,
-                                                         start_tracks_search_time)
+                                                         start_tracks_search_time, reg_id)
 
                 if delta_alarm_to_first_track_seconds > 30:
                     logger.warning(
@@ -679,6 +679,7 @@ def find_first_stable_stop(
     settings,
     first_interest=False,
     start_tracks_search_time=None,  # для совместимости
+    reg_id=None,
 ):
     """
     Ищем первую (от конца) стабильную остановку перед срабатыванием,
@@ -691,7 +692,7 @@ def find_first_stable_stop(
     """
 
 
-    logger.debug("Ищем движение и остановку до первого срабатывания концевика")
+    logger.debug(f"{reg_id}: Ищем движение и остановку до первого срабатывания концевика")
 
     cfg = settings.config
     cutoff_time = current_dt - datetime.timedelta(
@@ -711,7 +712,7 @@ def find_first_stable_stop(
         return int(tracks[idx].get("sp") or 0)
 
     if not tracks:
-        logger.warning("[ОСТАНОВКА НЕ НАЙДЕНА] пустой массив треков")
+        logger.warning(f"{reg_id}: [ОСТАНОВКА НЕ НАЙДЕНА] пустой массив треков")
         return None
 
     # Ограничим окно поиска по cutoff_time и start_index
@@ -721,7 +722,7 @@ def find_first_stable_stop(
     start_window_idx = bisect_left(times, cutoff_time)
     end_window_idx = max(0, min(start_index, len(tracks) - 1))
     if start_window_idx > end_window_idx:
-        logger.warning("[ОСТАНОВКА НЕ НАЙДЕНА] окно пусто")
+        logger.warning(f"{reg_id}: [ОСТАНОВКА НЕ НАЙДЕНА] окно пусто")
         return None
 
     # Скан вперёд по времени: start_window_idx..end_window_idx
@@ -743,7 +744,7 @@ def find_first_stable_stop(
         is_move_confirm = (v >= min_move_speed)
 
         logger.debug(
-            f"[СКАН] i={i}, t={t}, v={v}, "
+            f"{reg_id}: [СКАН] i={i}, t={t}, v={v}, "
             f"stop_active={stop_active}, stop_low_dur={stop_low_dur:.1f}, "
             f"move_after_stop_dur={move_after_stop_dur:.1f}"
         )
@@ -768,7 +769,7 @@ def find_first_stable_stop(
                     if move_after_stop_dur >= min_move_duration_sec and stop_low_dur >= min_stop_duration_sec:
                         candidate_start_gt = tracks[stop_start_i]["gt"]
                         logger.debug(
-                            f"[ДВИЖЕНИЕ ДО ОСТАНОВКИ] подтверждено: "
+                            f"{reg_id}: [ДВИЖЕНИЕ ДО ОСТАНОВКИ] подтверждено: "
                             f"stop_low_dur={stop_low_dur:.1f}s, move_dur={move_after_stop_dur:.1f}s, "
                             f"start={candidate_start_gt}"
                         )
@@ -792,12 +793,12 @@ def find_first_stable_stop(
     if stop_active and stop_low_dur >= min_stop_duration_sec:
         # Проверка "упёрлись в начало окна" для первого интереса -> нужна догрузка
         if first_interest and stop_start_i == start_window_idx and times[start_window_idx] >= cutoff_time:
-            logger.debug("[ДОГРУЗКА] Серия достаточна, но упёрлись в начало окна и ещё не прошли cutoff — нужна догрузка")
+            logger.debug("{reg_id}: [ДОГРУЗКА] Серия достаточна, но упёрлись в начало окна и ещё не прошли cutoff — нужна догрузка")
             return None
         logger.debug(f"[ФИНАЛ] stop_low_dur={stop_low_dur:.0f}s, начало {tracks[stop_start_i]['gt']}")
         return tracks[stop_start_i]["gt"]
 
-    logger.warning("[ОСТАНОВКА НЕ НАЙДЕНА]")
+    logger.warning("{reg_id}:  [ОСТАНОВКА НЕ НАЙДЕНА]")
     return None
 
 
