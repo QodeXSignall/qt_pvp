@@ -173,6 +173,7 @@ class Main:
                     return None
 
                 logger.info(f"{reg_id}: Начинаем работу с интересом {interest_name}")
+                logger.debug(f"{interest}")
 
                 # Создаём пути в облаке под интерес
                 cloud_paths = await cloud_uploader.create_interest_folder_path_async(

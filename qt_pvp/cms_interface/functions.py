@@ -1,6 +1,8 @@
 from typing import Optional, Dict, Any, List, Tuple
+
+from pygments.lexers import load_lexer_from_file
+
 from qt_pvp.functions import get_reg_info
-from datetime import datetime, timezone
 from qt_pvp.logger import logger
 from qt_pvp.data import settings
 from bisect import bisect_left
@@ -53,7 +55,7 @@ def get_interest_from_track(track, start_time: str, end_time: str,
 
 def _safe_fromtimestamp_sec(ts_sec: float) -> datetime:
     # на входе секунды (float/int)
-    dt_utc = datetime.datetime.fromtimestamp(ts_sec, tz=timezone.utc)
+    dt_utc = datetime.datetime.fromtimestamp(ts_sec, tz=datetime.timezone.utc)
     return dt_utc.astimezone().replace(tzinfo=None)
 
 
@@ -74,7 +76,7 @@ def _parse_alarm_time(a: Dict[str, Any], key_ms: str, key_str: str) -> Tuple[dat
     if isinstance(s, str) and s.strip():
         try:
             # строки обычно уже в локальном формате без TZ
-            dt_local = datetime.strptime(s.strip(), settings.TIME_FMT)
+            dt_local = datetime.datetime.strptime(s.strip(), settings.TIME_FMT)
             return dt_local, s.strip()
         except Exception:
             pass
@@ -304,6 +306,44 @@ def prepare_alarms(raw_alarms: List[Dict[str, Any]],
     starts = [a["start_ts"] for a in merged]
     return {"alarms": merged, "starts": starts}
 
+
+def estimate_move_start_kmhps(
+    t0,                 # datetime: последний наблюдаемый «стоп»-трек
+    t1,                 # datetime: первый «едем»-трек
+    v1_kmh,             # скорость на t1 (в тех же единицах, что MIN_MOVE_SPEED)
+    min_move_speed,     # порог «едем» (км/ч)
+    small_gap_sec=5,    # «малый разрыв»
+    max_gap_sec=30,     # «большой разрыв»
+    A_KMHPS=1.26,       # типовое ускорение (км/ч за секунду), 1.26 ~= 0.35 м/с²
+    clamp_eps=0.1       # небольшой зазор от границ окна
+):
+    """
+    Возвращает оценку момента старта движения (datetime) в интервале (t0, t1).
+    Всё в километрах/час и секундах, без перевода в м/с.
+    """
+    dt = (t1 - t0).total_seconds()
+
+    # 1) Малый разрыв — консервативно ближе к t1
+    if dt <= small_gap_sec:
+        t_move = t1 - datetime.timedelta(seconds=min(1.0, dt / 2.0))
+    else:
+        # 2) Оценка по «физике» разгона в км/ч/сек
+        A = max(A_KMHPS, 1e-6)
+        tau_sec = max(0.0, v1_kmh) / A
+        t_move = t1 - datetime.timedelta(seconds=tau_sec)
+
+    # 3) Очень большая дырка — смягчим, если еле тронулись
+    if dt > max_gap_sec and v1_kmh <= min_move_speed * 2:
+        t_move = max(t1 - datetime.timedelta(seconds=1.0), t0 + datetime.timedelta(seconds=clamp_eps))
+
+    # 4) Зажать в рамки окна
+    lo = t0 + datetime.timedelta(seconds=clamp_eps)
+    hi = t1 - datetime.timedelta(seconds=clamp_eps)
+    if t_move < lo: t_move = lo
+    if t_move > hi: t_move = hi
+
+    return t_move
+
 def find_interests_by_lifting_switches(
         tracks, sec_before=30, sec_after=30, start_tracks_search_time=None, reg_id=None, alarms=None):
     """
@@ -401,20 +441,50 @@ def find_interests_by_lifting_switches(
 
                 if delta_last_track_to_alarm_seconds > 30:
                     logger.warning(
-                        f"{reg_id}:[BEFORE] Пропуск поиска остановки — последний сохраненный трек до разрыва ({t_curr}) отстает от момента срабатывания ({alarm_dt}) на {delta_last_track_to_alarm_seconds:.1f}с.")
-                    time_before = (alarm_dt - datetime.timedelta(seconds=30)).strftime("%Y-%m-%d %H:%M:%S")
+                        f"{reg_id}:[BEFORE] Разрыв {delta_last_track_to_alarm_seconds:.1f}с до аларма {alarm_dt}. "
+                        f"Оцениваем время ДО внутри разрыва."
+                    )
+                    # оценим «последнюю секунду устойчивой остановки» внутри окна (t_curr..alarm_dt)
+                    # кейс 1: мы и так стояли на последнем треке — берём почти у самого аларма
+                    min_stop_speed = settings.config.getint("Interests", "MIN_STOP_SPEED")
+                    v_prev = int(track.get("sp") or 0)
+                    eps = 0.1
+                    lo = t_curr + datetime.timedelta(seconds=eps)
+                    hi = alarm_dt - datetime.timedelta(seconds=eps)
+
+                    if v_prev <= min_stop_speed or a.get("start_stopped"):
+                        t_before_dt = max(lo, alarm_dt - datetime.timedelta(seconds=1))
+                        time_before = t_before_dt.strftime("%Y-%m-%d %H:%M:%S")
+                        logger.debug(f"Кейс 1. Оцененный time_before: {time_before}")
+                    else:
+                        # кейс 2: на последнем треке мы НЕ стояли → пробуем обычный поиск по времени (он уже устойчив к дыркам)
+                        time_before = find_first_stable_stop(
+                            tracks, i, alarm_dt, settings, first_interest, start_tracks_search_time, reg_id
+                        )
+                        logger.debug(f"Кейс 2. Оцененный time_after: {time_before}")
                 else:
                     time_before = find_first_stable_stop(tracks, i, alarm_dt, settings, first_interest,
                                                          start_tracks_search_time, reg_id)
 
                 if delta_alarm_to_first_track_seconds > 30:
                     logger.warning(
-                        f"{reg_id}:[AFTER] Пропуск поиска движения — первый трек после разрыва ({t_next}) опережает момент срабатывания ({alarm_dt}) на {delta_alarm_to_first_track_seconds:.1f}с.")
-                    end_dt = a.get("end_dt") or (alarm_dt + datetime.timedelta(seconds=sec_after))
-                    fb_after = settings.config.getint("Interests", "AFTER_FALLBACK_SEC", fallback=30)
-                    time_after = (end_dt + datetime.timedelta(seconds=fb_after)).strftime("%Y-%m-%d %H:%M:%S")
+                        f"{reg_id}:[AFTER] Пропуск поиска движения — первый трек после разрыва ({t_next}) опережает момент срабатывания ({alarm_dt}) на {delta_alarm_to_first_track_seconds:.1f}с. Используем физическую оценку."
+                    )
+                    v1_kmh = float(next_track.get("sp") or 0)
+                    t_move = estimate_move_start_kmhps(
+                        t0=t_curr,
+                        t1=t_next,
+                        v1_kmh=v1_kmh,
+                        min_move_speed=settings.config.getint("Interests", "MIN_MOVE_SPEED"),
+                        small_gap_sec=settings.config.getint("Interests", "INTERESTS_MOVE_SMALL_GAP_SEC", fallback=5),
+                        max_gap_sec=settings.config.getint("Interests", "INTERESTS_MOVE_MAX_GAP_SEC", fallback=30),
+                        A_KMHPS=float(settings.config.get("Interests", "INTERESTS_MOVE_A_KMHPS", fallback="1.26")),
+                        clamp_eps=0.1,
+                    )
+                    time_after = t_move.strftime("%Y-%m-%d %H:%M:%S")
+                    logger.info(f"Оцененный time_after: {time_after}")
                 else:
-                    time_after, last_stop_idx = find_stop_after_lifting(tracks, i + 1, settings, logger)
+                    time_after, last_stop_idx = find_stop_after_lifting(tracks, i + 1, settings, logger, reg_id)
 
 
                 # Сдвиг фото ПОСЛЕ
@@ -455,7 +525,6 @@ def find_interests_by_lifting_switches(
 
         bits = list(bin(s1_int & 0xFFFFFFFF)[2:].zfill(32))
         bits.reverse()
-        #i += 1
 
         min_speed_for_switch_detect = settings.config.getint("Interests", "MIN_SPEED_FOR_SWITCH_DETECT")
         euro_on = bits[euro_bit_idx] == '1'
@@ -477,7 +546,8 @@ def find_interests_by_lifting_switches(
                 break
 
             # Находим время для фото ДО (Последнее время в окне стабильных остановок)
-            time_before = find_first_stable_stop(tracks, i, current_dt, settings, first_interest, start_tracks_search_time)
+            time_before = find_first_stable_stop(
+                tracks, i, current_dt, settings, first_interest, start_tracks_search_time, reg_id)
             if not time_before:
                 logger.warning(f"{reg_id}: [BEFORE] Не найдена остановка до сработки концевика в {timestamp}")
                 if first_interest:
@@ -493,7 +563,7 @@ def find_interests_by_lifting_switches(
                 switch_events.append({"datetime": timestamp, "switch": kgo_bit_idx})
 
             # В этом цикле мы перебираем треки и ищем трек, когда погрузка закочена (по скорости и концевику)
-            logger.debug(f"{reg_id}: Теперь ищем когда машина поехала после погрузки.")
+            logger.debug(f"{reg_id}: [Конец интереса]  Теперь ищем когда машина поехала после погрузки.")
 
             move_started_at = None
             while lifting_end_idx + 1 < len(tracks):
@@ -508,7 +578,7 @@ def find_interests_by_lifting_switches(
                 next_bits = list(bin(next_s1_int & 0xFFFFFFFF)[2:].zfill(32))
                 next_bits.reverse()
 
-                logger.debug(f"{reg_id}: Ищем момент когда машина поехала после погрузки. {next_track.get('gt')}, EuroIO(bit {euro_bit_idx})={next_bits[euro_bit_idx]}" + (f", KGOIO(bit {kgo_bit_idx})={next_bits[kgo_bit_idx]}" if kgo_bit_idx is not None else "") + f", sp={next_spd}")
+                logger.debug(f"{reg_id}: [Конец интереса] Ищем движение после погрузки. {next_track.get('gt')}, EuroIO(bit {euro_bit_idx})={next_bits[euro_bit_idx]}" + (f", KGOIO(bit {kgo_bit_idx})={next_bits[kgo_bit_idx]}" if kgo_bit_idx is not None else "") + f", sp={next_spd}")
 
                 min_move_speed = settings.config.getint("Interests", "MIN_MOVE_SPEED")
                 min_move_duration = settings.config.getint("Interests", "MIN_MOVE_DURATION_SEC")
@@ -533,11 +603,13 @@ def find_interests_by_lifting_switches(
                 else:
                     if move_started_at is None:
                         move_started_at = ts
+                        move_started_at_str = sw_time
                     lifting_end_idx += 1
                     if (ts - move_started_at) >= min_move_duration:
                         break
 
-            time_after, last_stop_idx = find_stop_after_lifting(tracks, last_switch_index + 1, settings, logger)
+            logger.debug(f"{reg_id}: Убедились, что машина поехала на {move_started_at_str}.")
+            time_after, last_stop_idx = find_stop_after_lifting(tracks, last_switch_index + 1, settings, logger, reg_id)
             used_fallback = False
             if not time_after:
                 time_after = fallback_photo_after_time(tracks, last_switch_index, settings, logger)
@@ -552,9 +624,10 @@ def find_interests_by_lifting_switches(
                 continue
 
             # Применяем сдвиг - фото ПОСЛЕ за несколько секунд до движения
+            adjust_secs = settings.config.getint("Interests", "PHOTO_AFTER_SHIFT_SEC")
             raw_time_after = datetime.datetime.strptime(time_after, "%Y-%m-%d %H:%M:%S")
-            adjusted_time_after = raw_time_after - datetime.timedelta(
-                seconds=settings.config.getint("Interests", "PHOTO_AFTER_SHIFT_SEC"))
+            adjusted_time_after = raw_time_after - datetime.timedelta(seconds=adjust_secs)
+            logger.debug(f"{reg_id}: Двигаем время конца интереса на {adjust_secs}с")
             time_after = adjusted_time_after.strftime("%Y-%m-%d %H:%M:%S")
 
             last_alarm_dt = datetime.datetime.strptime(tracks[last_switch_index].get("gt"), "%Y-%m-%d %H:%M:%S")
@@ -600,7 +673,118 @@ def _to_ts(gt):
         return datetime.strptime(gt, "%Y-%m-%d %H:%M:%S").timestamp()
 
 
-def find_stop_after_lifting(tracks, start_idx, settings, logger=None):
+def find_stop_after_lifting(tracks, start_idx, settings, logger=None, reg_id=None):
+    """
+    Ищем момент НАЧАЛА ДВИЖЕНИЯ после lifting:
+    - Считаем длительности по времени (а не по количеству точек).
+    - Возвращаем (t_move_str, last_stop_idx), где t_move_str — оценка старта движения (для твоего последующего сдвига).
+    - Устойчиво к разреженной телеметрии (дыркам).
+    """
+    if logger is None:
+        class _N:
+            def debug(self, *a, **k): pass
+            def info(self, *a, **k): pass
+            def warning(self, *a, **k): pass
+        logger = _N()
+
+    # Пороги из настроек (в тех же единицах, что и sp в треках!)
+    min_stop_speed = settings.config.getint("Interests", "MIN_STOP_SPEED")
+    min_stop_duration = settings.config.getint("Interests", "MIN_STOP_DURATION_SEC")
+    min_move_speed = settings.config.getint("Interests", "MIN_MOVE_SPEED")
+    min_move_duration = settings.config.getint("Interests", "MIN_MOVE_DURATION_SEC")
+
+
+    def ts(i: int) -> datetime:
+        return datetime.datetime.strptime(tracks[i]["gt"], "%Y-%m-%d %H:%M:%S")
+    def spd(i: int) -> float:
+        return float(tracks[i].get("sp") or 0)
+
+    n = len(tracks)
+    if not (0 <= start_idx < n):
+        logger.warning(f"{reg_id}: [AFTER] start_idx {start_idx} вне диапазона треков")
+        return None, None
+
+    # Скан от последнего концевика вправо
+    i = start_idx
+    stop_active = False
+    stop_low_dur = 0.0
+    stop_end_idx = None         # последний индекс, где мы ещё «стояли»
+    prev_t = ts(i)
+
+    move_active = False
+    move_dur = 0.0
+    move_start_idx = None       # первый индекс, где скорость >= min_move_speed
+
+    while i < n:
+        t = ts(i)
+        v = spd(i)
+        dt = (t - prev_t).total_seconds() if i > start_idx else 0.0
+
+        is_stop = (v <= min_stop_speed)
+        is_move = (v >= min_move_speed)
+
+        # --- зона остановки ---
+        if is_stop:
+            if not stop_active:
+                stop_active = True
+                stop_low_dur = 0.0
+            stop_low_dur += dt
+            stop_end_idx = i      # пока считаем, что «конец остановки» — текущий i
+            # Любая низкая скорость сбрасывает накопление движения
+            move_active = False
+            move_dur = 0.0
+            move_start_idx = None
+
+        # --- не стоп ---
+        else:
+            # закончилась зона стопа — фиксируем её валидность по длительности
+            if stop_active and stop_low_dur < min_stop_duration:
+                # короткая "ложная" остановка — просто забываем
+                stop_active = False
+                stop_low_dur = 0.0
+                stop_end_idx = None
+
+            # если пошла скорость — начинаем/продолжаем «подтверждаемое движение»
+            if is_move:
+                if not move_active:
+                    move_active = True
+                    move_dur = 0.0
+                    move_start_idx = i
+                move_dur += dt
+            else:
+                # скорость промежуточная (между stop и move) — это "ничего": сбрасываем подтверждение движения
+                move_active = False
+                move_dur = 0.0
+                move_start_idx = None
+
+        # --- проверка условия «движение подтверждено» ---
+        if move_active and (move_dur >= min_move_duration) and (stop_end_idx is not None):
+            # У нас есть «последний стоп» (stop_end_idx) и «первый едем» (move_start_idx)
+            t0 = ts(stop_end_idx)
+            v0 = spd(stop_end_idx)
+            t1 = ts(move_start_idx)
+            v1 = spd(move_start_idx)
+
+            # Если разрыв точек большой — оценим t_move внутри разрыва
+            dt_gap = (t1 - t0).total_seconds()
+            if dt_gap > 1.0:
+                t_move = estimate_move_start_kmhps(t0=t0, t1=t1, v1_kmh=v1, min_move_speed=min_move_speed)
+                t_move_str = t_move.strftime("%Y-%m-%d %H:%M:%S")
+                logger.debug(f"{reg_id}: [AFTER] Оценили момент старта движения с разрывом {dt_gap:.1f}s → {t_move_str}")
+                return t_move_str, stop_end_idx
+            else:
+                # Плотная телеметрия — «старт движения» почти на move_start_idx
+                t_move_str = t1.strftime("%Y-%m-%d %H:%M:%S")
+                return t_move_str, stop_end_idx
+
+        prev_t = t
+        i += 1
+
+    logger.warning(f"{reg_id}: [PHOTO AFTER] Не удалось подтвердить движение после lifting (start_idx={start_idx})")
+    return None, None
+
+
+def find_stop_after_lifting_depr(tracks, start_idx, settings, logger=None, reg_id=None):
     # В этом блоке мы ищем время для фото ПОСЛЕ погрузки — после последнего срабатывания концевика
     stop_count = 0          # Количество точек с низкой скоростью (стоп)
     move_count = 0          # Количество точек подряд с высокой скоростью (движение)
@@ -612,11 +796,15 @@ def find_stop_after_lifting(tracks, start_idx, settings, logger=None):
     min_move_speed = settings.config.getint("Interests", "MIN_MOVE_SPEED")
     min_move_duration = settings.config.getint("Interests", "MIN_MOVE_DURATION_SEC")
 
+    logger.debug("Мы обнаружили когда машина поехала, теперь ищем последний момент остановки перед движением.")
     # Начинаем проходить треки сразу после последнего концевика
     k = start_idx
     while k < len(tracks):
         spd = tracks[k].get("sp") or 0  # Текущая скорость
-
+        time_curr = tracks[k].get("gt")
+        logger.debug(
+            f"{reg_id}: [Конец интереса] Обрабатываем треки. time - {time_curr}, stop_count - {stop_count}, "
+            f"move_count - {move_count}, spd - {spd}")
         # Если объект почти стоит — возможно, началась остановка
         if int(spd) <= min_stop_speed:
             stop_count += 1
@@ -629,13 +817,13 @@ def find_stop_after_lifting(tracks, start_idx, settings, logger=None):
             # Подтверждаем, что было и стабильное движение
             if move_count >= min_move_duration and last_stop_idx is not None:
                 if logger:
-                    logger.debug(f"[PHOTO AFTER] Найдена стабильная остановка на idx={last_stop_idx}, gt={tracks[last_stop_idx].get('gt')}")
+                    logger.debug(f"{reg_id}: [Конец интереса] Найдена стабильная остановка на idx={last_stop_idx}, gt={tracks[last_stop_idx].get('gt')}")
                 return tracks[last_stop_idx].get("gt"), last_stop_idx  # Возвращаем и время, и индекс
 
         # Иначе — сбрасываем всё, потому что последовательность нарушена
         else:
             if logger:
-                logger.debug(f"[PHOTO AFTER] Сброс счётчиков на idx={k} (spd={spd}, stop={stop_count}, move={move_count})")
+                logger.debug(f"{reg_id}: [Конец интереса] Сброс счётчиков на idx={k} (spd={spd}, stop={stop_count}, move={move_count})")
             stop_count = 0
             move_count = 0
 
@@ -744,7 +932,7 @@ def find_first_stable_stop(
         is_move_confirm = (v >= min_move_speed)
 
         logger.debug(
-            f"{reg_id}: [СКАН] i={i}, t={t}, v={v}, "
+            f"{reg_id}: [Начало интереса] i={i}, t={t}, v={v}, "
             f"stop_active={stop_active}, stop_low_dur={stop_low_dur:.1f}, "
             f"move_after_stop_dur={move_after_stop_dur:.1f}"
         )
@@ -786,6 +974,7 @@ def find_first_stable_stop(
 
     # На выходе выбираем наиболее позднего кандидата (если был подтверждён движением)
     if candidate_start_gt is not None:
+        logger.debug(f"{reg_id}: [ДВИЖЕНИЕ ДО ОСТАНОВКИ] Лучший кандидат выбран - {candidate_start_gt}")
         return candidate_start_gt
 
     # Если подтверждённого движения не было, но мы закончили на реальной остановке — вернём её начало,
@@ -793,12 +982,12 @@ def find_first_stable_stop(
     if stop_active and stop_low_dur >= min_stop_duration_sec:
         # Проверка "упёрлись в начало окна" для первого интереса -> нужна догрузка
         if first_interest and stop_start_i == start_window_idx and times[start_window_idx] >= cutoff_time:
-            logger.debug("{reg_id}: [ДОГРУЗКА] Серия достаточна, но упёрлись в начало окна и ещё не прошли cutoff — нужна догрузка")
+            logger.debug(f"{reg_id}: [ДОГРУЗКА] Серия достаточна, но упёрлись в начало окна и ещё не прошли cutoff — нужна догрузка")
             return None
         logger.debug(f"[ФИНАЛ] stop_low_dur={stop_low_dur:.0f}s, начало {tracks[stop_start_i]['gt']}")
         return tracks[stop_start_i]["gt"]
 
-    logger.warning("{reg_id}:  [ОСТАНОВКА НЕ НАЙДЕНА]")
+    logger.warning(f"{reg_id}:  [ОСТАНОВКА НЕ НАЙДЕНА]")
     return None
 
 

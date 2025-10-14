@@ -512,7 +512,9 @@ async def download_video(
                     if not url:
                         logger.warning(f"{reg_id}: у файла нет DownTaskUrl: {f}")
                         continue
-                    file_path = await wait_and_get_dwn_url(jsession=jsession, download_task_url=url, reg_id=reg_id)
+                    file_path = await wait_and_get_dwn_url(
+                        jsession=jsession, download_task_url=url, reg_id=reg_id, channel_id=channel_id,
+                        interest_name=interest_name,)
                     if file_path:
                         file_paths.append(file_path)
                 return file_paths or None
@@ -543,8 +545,8 @@ async def download_single_clip_per_channel(
     Возвращает: {channel_id: absolute_video_path or None}
     """
     TIME_FMT = "%Y-%m-%d %H:%M:%S"
-    dt_start = datetime.datetime.strptime(interest["photo_before_timestamp"], TIME_FMT)
-    dt_end   = datetime.datetime.strptime(interest["photo_after_timestamp"],   TIME_FMT)
+    dt_start = datetime.datetime.strptime(interest["start_time"], TIME_FMT)
+    dt_end   = datetime.datetime.strptime(interest["end_time"],   TIME_FMT)
     interest_name = interest["name"]
 
     start_sec = dt_start.hour * 3600 + dt_start.minute * 60 + dt_start.second
@@ -565,7 +567,7 @@ async def download_single_clip_per_channel(
                 start_sec=start_sec,
                 end_sec=end_sec,
                 adjustment_sequence=(0, 5, 10, 15, 30),
-                interest_name=interest_name
+                interest_name=interest_name,
             )  # уже есть в проекте  :contentReference[oaicite:1]{index=1}
 
         if not videos_paths:

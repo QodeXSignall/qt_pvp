@@ -4,8 +4,8 @@ import asyncio
 
 
 REG_ID = "108410"
-START_TIME = "2025-10-08 07:01:04"
-END_TIME = "2025-10-08 07:05:55"
+START_TIME = "2025-10-09 15:50:04"
+END_TIME = "2025-10-09 16:15:55"
 
 
 inst = Main()
