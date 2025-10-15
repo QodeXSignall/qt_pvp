@@ -230,11 +230,16 @@ class Main:
                     interest=interest,
                     channels=final_channels_to_download
                 )
+                # оставляем полную структуру для доступа к concat_sources при отладке
+                channels_info = channels_files_dict
 
+                channels_paths = {ch: info["path"] for ch, info in channels_info.items() if info and info.get("path")}
                 # 5) если надо — выгружаем «полный» клип в облако (только для chanel_id)
+                full_clip_upload_status = False
                 full_clip_path = None
                 if not interest_video_exists:
-                    full_clip_path = channels_files_dict.get(chanel_id)
+                    file_dict = channels_files_dict.get(chanel_id)
+                    full_clip_path = file_dict["path"]
                     if full_clip_path:
                          full_clip_upload_status = await self.upload_interest_video_cloud(
                             reg_id=reg_id,
@@ -253,15 +258,16 @@ class Main:
 
                 # 6) извлекаем кадры из КАЖДОГО скачанного клипа и выгружаем их
                 upload_status = await self.process_frames_before_after(
-                    reg_id, interest, channels_files_dict  # ← передаём словарь!!!
+                    reg_id, interest, channels_paths  # ← передаём словарь!!!
                 )
                 logger.info(f"Результат загрузки изображений: {upload_status}")
 
                 # 7) чистим локальные клипы (кроме «полного» по нужному каналу)
                 removed = cms_api.delete_videos_except(
-                    videos_by_channel=channels_files_dict,
+                    videos_by_channel=channels_paths,
                     keep_channel_id=chanel_id if not interest_video_exists else None
                 )
+                all_done_ok = bool(upload_status and (interest_video_exists or full_clip_upload_status))
 
                 if full_clip_path:
                     if full_clip_upload_status:
@@ -271,14 +277,24 @@ class Main:
                             os.remove(full_clip_path)
                     else:
                         logger.error(f"{reg_id}: Не удалось загрузить видео интереса в {interest_name}.")
-                if after_channels_to_download or after_channels_to_download:
-                    if upload_status:
-                        interest_temp_folder = os.path.join(settings.TEMP_FOLDER,
-                                                            interest_name)
-                        if os.path.exists(interest_temp_folder):
-                            logger.info(
-                                f"{reg_id}: Удаляем временную директорию интереса {interest_name}. ({interest_temp_folder}).")
-                            shutil.rmtree(interest_temp_folder)
+                if all_done_ok:
+                    total_src_removed = 0
+                    for ch, info in channels_info.items():
+                        sources = (info or {}).get("concat_sources") or []
+                        for fp in sources:
+                            try:
+                                if os.path.exists(fp):
+                                    os.remove(fp)
+                                    total_src_removed += 1
+                            except Exception as e:
+                                logger.warning(f"{reg_id}: Не удалось удалить исходник {fp}: {e}")
+                    interest_temp_folder = os.path.join(settings.TEMP_FOLDER,
+                                                        interest_name)
+                    if os.path.exists(interest_temp_folder):
+                        logger.info(
+                            f"{reg_id}: Удаляем временную директорию интереса {interest_name}. ({interest_temp_folder}).")
+                        shutil.rmtree(interest_temp_folder)
+
                 logger.info(f"{reg_id}: V2 завершено. Upload={upload_status}. Удалено видеофайлов: {removed}.")
 
 

@@ -3,9 +3,9 @@ from main_operator import Main
 import asyncio
 
 
-REG_ID = "108410"
-START_TIME = "2025-10-09 15:50:04"
-END_TIME = "2025-10-09 16:15:55"
+REG_ID = "018270348452"
+START_TIME = "2025-10-14 10:42:00"
+END_TIME = "2025-10-14 10:59:40"
 
 
 inst = Main()
@@ -14,7 +14,6 @@ async def local_get_interests_async():
     await inst.login()
     interests = await inst.get_interests_async(reg_id=REG_ID, reg_info=reg_info, start_time=START_TIME, stop_time=END_TIME)
     interests = main_funcs.merge_overlapping_interests(interests)
-    print(len(interests))
     for interest in interests:
         print(interest)
 

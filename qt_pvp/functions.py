@@ -86,10 +86,24 @@ def split_time_range_to_dicts(start_time, end_time, interval):
     return result
 
 
-
-# qt_pvp/functions.py
 def concatenate_videos(converted_files, output_abs_name, reg_id, interest_name):
     concat_candidates = []
+    if os.path.exists(output_abs_name):
+        logger.info(f"[CONCAT] Видео уже было конкатенировано ранее, найдено: {output_abs_name}")
+        return
+
+    # --- Сортировка по времени начала в имени файла ---
+    # ищем шаблон -HHMMSS- в имени (например, -093433-)
+    def extract_time_key(path):
+        base = os.path.basename(path)
+        m = re.search(r'-(\d{6})-', base)
+        if m:
+            return m.group(1)
+        return base  # fallback, если не нашли — оставляем как есть
+
+    converted_files = sorted(converted_files, key=extract_time_key)
+
+    # --- Фильтрация существующих и непустых файлов ---
     for f in converted_files:
         if not f:
             continue
@@ -105,29 +119,29 @@ def concatenate_videos(converted_files, output_abs_name, reg_id, interest_name):
         raise FileNotFoundError(f"{reg_id}: {interest_name} [CONCAT] Нет ни одного валидного входного файла — пропускаю интерес.")
 
     if len(concat_candidates) == 1:
-        # вместо ffmpeg — просто копия единственного файла как итог
         src = concat_candidates[0]
         os.makedirs(os.path.dirname(output_abs_name), exist_ok=True)
         shutil.copyfile(src, output_abs_name)
         logger.debug(f"{reg_id}: {interest_name} [CONCAT] Единственный файл — скопирован: {src} -> {output_abs_name}")
         return
 
-    # стандартная concat через ffmpeg
     concat_list_path = os.path.join(
         os.path.dirname(output_abs_name),
         f"concat_list_{uuid.uuid4().hex}.txt"
     )
     logger.debug(f"{reg_id}: {interest_name} [CONCAT] Конкатенация файлов {concat_candidates}")
+
     try:
         with open(concat_list_path, "w", encoding="utf-8") as f:
             for file in concat_candidates:
                 f.write(f"file '{file}'\n")
+
         cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
                "-i", concat_list_path, "-c", "copy", output_abs_name]
-        #logger.debug(f"{reg_id}: [CONCAT] Команда: {' '.join(cmd)}")
-        # захватываем stderr для нормального логирования
+
         proc = subprocess.run(cmd, check=True, capture_output=True, text=True)
         logger.debug(f"{reg_id}: {interest_name} [CONCAT] Успех. Результат: {output_abs_name}")
+
     except subprocess.CalledProcessError as e:
         logger.error(f"{reg_id}: {interest_name} [CONCAT] ffmpeg упал: {e.stderr or e.stdout}")
         raise
@@ -136,7 +150,6 @@ def concatenate_videos(converted_files, output_abs_name, reg_id, interest_name):
             os.remove(concat_list_path)
         except OSError:
             pass
-
 
 
 def convert_video_file(input_video_path: str, output_dir: str = None,

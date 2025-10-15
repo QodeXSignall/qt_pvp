@@ -22,7 +22,7 @@ TIME_FMT    = "%Y-%m-%d %H:%M:%S"    # в get_interests
 
 REGS_PLATES = {
     "108411": "A939CA702",
-    "108410": "K180KE702",
+    "108410": "К180КЕ702",
     "018270348452": "K630AX702"
 }
 
@@ -83,12 +83,12 @@ def diff_sets(expected: Set[str], detected: Set[str], eps_sec: int = 0) -> Tuple
     missing -= matched_exp
     return new, missing
 
-def main(day_str = DAY_STR):
+def main(day_str = DAY_STR, reg_id = REG_ID):
     print(f"\nWorking with day {day_str}")
     client = Client(WEBDAV_OPTIONS)
 
     # 1) Эталон из WebDAV
-    plate_num = REGS_PLATES[REG_ID]
+    plate_num = REGS_PLATES[reg_id]
     try:
         folder_names = list_interest_folders(client, BASE_PATH, plate_num, day_str)
     except RemoteResourceNotFound:
@@ -106,8 +106,8 @@ def main(day_str = DAY_STR):
 
     # 3) Поиск интересов в системе
     inst = Main()
-    reg_info = main_funcs.get_reg_info(reg_id=REG_ID)
-    interests = inst.get_interests(reg_id=REG_ID, reg_info=reg_info,
+    reg_info = main_funcs.get_reg_info(reg_id=reg_id)
+    interests = inst.get_interests(reg_id=reg_id, reg_info=reg_info,
                                    start_time=start_time, stop_time=stop_time)
     #for interest in interests:
     #    print(interest["name"])
@@ -132,7 +132,7 @@ def main(day_str = DAY_STR):
 
 
 if __name__ == "__main__":
-    for day in ["2025.09.11","2025.09.10","2025.09.09","2025.09.08","2025.09.07","2025.09.06",
-                "2025.09.05","2025.09.04","2025.09.03","2025.09.02", "2025.09.01"]:
+    for day in ["2025.10.08", "2025.10.06"]:
         #day = "2025.08.17"
-        main(day_str=day)
+        reg_id = "108410"
+        main(day_str=day, reg_id=reg_id)

@@ -206,7 +206,8 @@ async def get_device_track_page_async(jsession: str, device_id: str,
     async with limits.get_cms_global_sem():
         async with limits.get_device_sem(device_id):
             client = cms_http.get_cms_async_client()
-            return await client.get(url, params=params)
+            resp =  await client.get(url, params=params)
+            return resp
 
 
 @functions.cms_data_get_decorator_async()
@@ -233,7 +234,6 @@ async def get_device_track_all_pages_async(jsession: str, device_id: str, start_
     first.raise_for_status()
     data = first.json()
     pages = int(data.get("pagination", {}).get("totalPages", 1)) or 1
-
     results = [data]
     if pages > 1:
         async def _fetch(p):
@@ -514,7 +514,7 @@ async def download_video(
                         continue
                     file_path = await wait_and_get_dwn_url(
                         jsession=jsession, download_task_url=url, reg_id=reg_id, channel_id=channel_id,
-                        interest_name=interest_name,)
+                        interest_name=interest_name)
                     if file_path:
                         file_paths.append(file_path)
                 return file_paths or None
@@ -535,14 +535,12 @@ async def download_single_clip_per_channel(
     jsession: str,
     reg_id: str,
     interest: dict,
-    channels: list[int] = (0, 1, 2, 3),
-    merge_to_single_file: bool = True,
-) -> Dict[int, str | None]:
+    channels: list[int] = (0, 1, 2, 3)):
     """
     Скачивает РОВНО ОДИН финальный видеоклип на каждый канал так,
     чтобы в нём попадали и начало, и конец интереса.
     Если CMS отдаёт несколько отрезков — конкатенируем в один файл.
-    Возвращает: {channel_id: absolute_video_path or None}
+    Возвращает: {ch: {"path": str|None, "concat_sources": list[str]|None}}
     """
     TIME_FMT = "%Y-%m-%d %H:%M:%S"
     dt_start = datetime.datetime.strptime(interest["start_time"], TIME_FMT)
@@ -552,11 +550,11 @@ async def download_single_clip_per_channel(
     start_sec = dt_start.hour * 3600 + dt_start.minute * 60 + dt_start.second
     end_sec   = dt_end.hour   * 3600 + dt_end.minute   * 60 + dt_end.second
 
-    out: Dict[int, str | None] = {}
+    out: Dict[int, Dict[str, Any]] = {}
     interest_tmp_dir = os.path.join(settings.TEMP_FOLDER, interest["name"])
     os.makedirs(interest_tmp_dir, exist_ok=True)
 
-    async def _one_channel(ch: int) -> Tuple[int, str | None]:
+    async def _one_channel(ch: int, interest_name: str) -> Tuple[int, str | None, list[str] | None]:
         # Скачиваем все куски на интервале, дальше сведём в один файл
         async with limits._get_video_sem_for(reg_id):
             videos_paths = await download_video(
@@ -572,28 +570,25 @@ async def download_single_clip_per_channel(
 
         if not videos_paths:
             logger.warning(f"{reg_id}: ch={ch} клипы не получены.")
-            return ch, None
+            return ch, None, videos_paths
 
         if len(videos_paths) == 1:
-            return ch, videos_paths[0]
+            return ch, videos_paths[0], videos_paths
 
         # конкат в один файл (mp4) тем же методом, что используешь для интересов
         merged_path = os.path.join(interest_tmp_dir, f"ch{ch}_merged.mp4")
         try:
             await asyncio.to_thread(core_funcs.concatenate_videos, videos_paths, merged_path, reg_id, interest_name)  # :contentReference[oaicite:2]{index=2}
-            for video_path in videos_paths:
-                if os.path.exists(video_path):
-                    logger.debug(f"{reg_id}: {interest_name} Удаляем исходный файл до конкатенации {video_path}")
-                    os.remove(video_path)
-            return ch, merged_path
+            return ch, merged_path, videos_paths
         except Exception as e:
             logger.error(f"{reg_id}: {interest_name} ch={ch} concat failed: {e}")
-            return ch, None
+            return ch, None, videos_paths
 
-    tasks = [asyncio.create_task(_one_channel(ch)) for ch in channels]
+    tasks = [asyncio.create_task(_one_channel(ch,  interest_name)) for ch in channels]
     for t in asyncio.as_completed(tasks):
-        ch, path = await t
-        out[ch] = path
+        ch, path, videos_paths = await t
+        out[ch] = {"path": path,
+                   "concat_sources": videos_paths}
     return out
 
 # cms_api.py
