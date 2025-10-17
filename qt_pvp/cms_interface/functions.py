@@ -1,8 +1,5 @@
 from typing import Optional, Dict, Any, List, Tuple
-
 from pygments.lexers import load_lexer_from_file
-
-from qt_pvp.cms_interface.cms_api import LoadingInProgress
 from qt_pvp.functions import get_reg_info
 from qt_pvp.logger import logger
 from qt_pvp.data import settings
@@ -12,9 +9,12 @@ import functools
 import asyncio
 import httpx
 
-
 io_to_reg_map = {1: 20, 2: 21, 3: 22, 4: 23}
 
+
+class LoadingInProgress(RuntimeError):
+    """ Погрузка еще в процессе, прерываем поиск интересов """
+    pass
 
 def get_interest_from_track(track, start_time: str, end_time: str,
                             photo_before_timestamp: str = None,

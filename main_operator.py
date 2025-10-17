@@ -89,7 +89,7 @@ class Main:
                     reg_id=reg_id,
                     alarms=prepared,
                 )
-            except cms_api.LoadingInProgress:
+            except cms_api_funcs.LoadingInProgress:
                 logger.info("Прерываем обработку интересов потому что машина грузится в это время ")
                 return {"error": "Loading in progress"}
 
