@@ -217,7 +217,7 @@ class Main:
                 })
 
                 logger.debug(
-                    f"{reg_id}. Нужно скачать видео интереса: {not interest_video_exists}. "
+                    f"{reg_id}. {interest_name} Нужно скачать видео интереса: {not interest_video_exists}. "
                     f"Кадры ДО: {before_channels_to_download}. "
                     f"Кадры ПОСЛЕ: {after_channels_to_download}. "
                     f"Итого каналы: {final_channels_to_download}"
