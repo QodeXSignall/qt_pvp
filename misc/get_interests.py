@@ -3,9 +3,9 @@ from main_operator import Main
 import asyncio
 
 
-REG_ID = "018270348452"
-START_TIME = "2025-10-14 10:42:00"
-END_TIME = "2025-10-14 10:59:40"
+REG_ID = "108410"
+START_TIME = "2025-10-15 06:42:00"
+END_TIME = "2025-10-15 16:00:00"
 
 
 inst = Main()
@@ -21,4 +21,7 @@ if __name__ == "__main__":
     asyncio.run(local_get_interests_async())
 
 
+real_points = [
+    {"type": "euro", "amount": 2, "time_start": "2025-10-15 08:09:22", "time_end": "2025-10-15 08:09:22"},
 
+]

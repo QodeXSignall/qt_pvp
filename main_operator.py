@@ -82,12 +82,16 @@ class Main:
                 min_stop_speed_kmh=settings.config.getint("Interests", "MIN_STOP_SPEED") / 10.0,
                 merge_gap_sec=15
             )
-            interests = cms_api_funcs.find_interests_by_lifting_switches(
-                tracks=tracks,
-                start_tracks_search_time=start_time_dt,
-                reg_id=reg_id,
-                alarms=prepared,
-            )
+            try:
+                interests = cms_api_funcs.find_interests_by_lifting_switches(
+                    tracks=tracks,
+                    start_tracks_search_time=start_time_dt,
+                    reg_id=reg_id,
+                    alarms=prepared,
+                )
+            except cms_api.LoadingInProgress:
+                logger.info("Прерываем обработку интересов потому что машина грузится в это время ")
+                return {"error": "Loading in progress"}
 
             if isinstance(interests, dict) and "interests" in interests:
                 return interests["interests"]

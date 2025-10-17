@@ -2,6 +2,7 @@ from typing import Optional, Dict, Any, List, Tuple
 
 from pygments.lexers import load_lexer_from_file
 
+from qt_pvp.cms_interface.cms_api import LoadingInProgress
 from qt_pvp.functions import get_reg_info
 from qt_pvp.logger import logger
 from qt_pvp.data import settings
@@ -633,8 +634,12 @@ def find_interests_by_lifting_switches(
                     age_min = age_sec / 60.0
                     logger.info(
                         f"{reg_id}: [AFTER] Пропускаем fallback: последний трек свежий ({age_min:.1f} мин назад, {last_track_dt}). Ждём движения.")
-                    i = lifting_end_idx + 1
-                    continue
+                    if loading_intervals:
+                        return {"interests": loading_intervals}
+                    else:
+                        raise LoadingInProgress
+                    #i = lifting_end_idx + 1
+                    #continue
 
             if (last_stop_idx is None) and (not used_fallback):
                 logger.warning(f"{reg_id}: [AFTER] Нет last_stop_idx — остановка не найдена после {timestamp}")

@@ -149,6 +149,10 @@ class DeviceOfflineError(RuntimeError):
     """CMS: устройство офлайн — нужно отложить обработку интереса и попробовать позже."""
     pass
 
+class LoadingInProgress(RuntimeError):
+    """ Погрузка еще в процессе, прерываем поиск интересов """
+    pass
+
 @functions.cms_data_get_decorator_async()
 async def get_online_devices(jsession, device_id=None):
     url = f"{settings.cms_host}/StandardApiAction_getDeviceOlStatus.action?"
