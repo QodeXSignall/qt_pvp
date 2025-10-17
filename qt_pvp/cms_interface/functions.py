@@ -388,6 +388,8 @@ def find_interests_by_lifting_switches(
             logger.warning(f"{reg_id}: [ALARM GAP] Не удалось выбрать алармы в разрыве: {e}")
             return []
 
+    stop_first = None
+
     while i < len(tracks) - 1:
         # Защита от выхода за границы для next_track
         if i + 1 >= len(tracks):
@@ -521,6 +523,7 @@ def find_interests_by_lifting_switches(
         # === Старая логика концевиков — без изменений ===
         s1 = track.get("s1")
         timestamp = track.get("gt")
+        current_dt = datetime.datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
         s1_int = int(s1)
 
         bits = list(bin(s1_int & 0xFFFFFFFF)[2:].zfill(32))
@@ -534,11 +537,19 @@ def find_interests_by_lifting_switches(
             if track.get("sp") > min_speed_for_switch_detect:
                 logger.debug(f"{reg_id}: [SWITCH] Игнор: скорость {track.get('sp')} > {min_speed_for_switch_detect}")
                 i += 1
+                stop_first = None
+                continue
+            if not stop_first:
+                logger.debug(f"Найдена первая остановка - {current_dt}")
+                stop_first = current_dt
+            if not (current_dt - stop_first).total_seconds() > settings.config.getint("Interests", "MIN_STOP_DURATION_SEC"):
+                logger.info(f"{reg_id} [SWITCH] Время прошедшее с остановки слишком маленькое - игнорируем. {current_dt}")
+                i += 1
                 continue
 
+            stop_first = None
             logger.debug(f"{reg_id}: [SWITCH] Принято: {cargo_type} в {timestamp}")
             switch_events = []
-            current_dt = datetime.datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
 
             if i >= len(tracks):
                 logger.warning(f"{reg_id}: [SWITCH] Индекс {i} вне диапазона треков. Прерывание.")

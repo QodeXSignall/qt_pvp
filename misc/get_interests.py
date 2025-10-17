@@ -3,9 +3,9 @@ from main_operator import Main
 import asyncio
 
 
-REG_ID = "108410"
-START_TIME = "2025-10-15 06:42:00"
-END_TIME = "2025-10-15 16:00:00"
+REG_ID = "018270348452"
+START_TIME = "2025-10-16 12:35:00"
+END_TIME = "2025-10-16 12:59:00"
 
 
 inst = Main()
