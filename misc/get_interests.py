@@ -4,8 +4,8 @@ import asyncio
 
 
 REG_ID = "018270348452"
-START_TIME = "2025-10-16 14:00:00"
-END_TIME = "2025-10-16 14:30:00"
+START_TIME = "2025-10-18 06:00:00"
+END_TIME = "2025-10-18 20:30:00"
 
 
 inst = Main()
@@ -23,5 +23,4 @@ if __name__ == "__main__":
 
 real_points = [
     {"type": "euro", "amount": 2, "time_start": "2025-10-15 08:09:22", "time_end": "2025-10-15 08:09:22"},
-
 ]

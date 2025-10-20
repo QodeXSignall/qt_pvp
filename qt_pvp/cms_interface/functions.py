@@ -356,6 +356,7 @@ def find_interests_by_lifting_switches(
     i = 0
     first_interest = True   # Используем в случаях, когда для первого интереса не найдена начальная остановка в заданных треках
     reg_cfg = get_reg_info(reg_id) if reg_id else None
+
     try:
         euro_alarm_cfg = int((reg_cfg or {}).get("euro_container_alarm", 4))
     except Exception:
@@ -368,6 +369,22 @@ def find_interests_by_lifting_switches(
 
     euro_bit_idx = io_to_reg_map.get(euro_alarm_cfg, 23)
     kgo_bit_idx = io_to_reg_map.get(kgo_alarm_cfg, None) if kgo_alarm_cfg is not None else None
+
+    last_stop_started_at: datetime.datetime | None = None
+    prev_speed: int | None = None
+    min_stop_speed = settings.config.getint("Interests", "MIN_STOP_SPEED")
+    min_move_speed = settings.config.getint("Interests", "MIN_MOVE_SPEED")
+    min_stop_duration = settings.config.getint("Interests", "MIN_STOP_DURATION_SEC")
+
+    def _update_stop_state(cur_dt: datetime.datetime, cur_speed: int):
+        nonlocal last_stop_started_at, prev_speed
+        # старт остановки при переходе через порог вниз
+        if cur_speed <= min_stop_speed and (prev_speed is None or prev_speed > min_stop_speed):
+            last_stop_started_at = cur_dt
+        # любая устойчивая «поехали» сбрасывает маркер остановки
+        if cur_speed >= min_move_speed:
+            last_stop_started_at = None
+        prev_speed = cur_speed
 
     # --- локальная утилита для быстрого поиска алармов в окне разрыва ---
     def _alarms_in_gap(prepared, gap_start_ts, gap_end_ts):
@@ -388,8 +405,6 @@ def find_interests_by_lifting_switches(
             logger.warning(f"{reg_id}: [ALARM GAP] Не удалось выбрать алармы в разрыве: {e}")
             return []
 
-    stop_first = None
-
     while i < len(tracks) - 1:
         # Защита от выхода за границы для next_track
         if i + 1 >= len(tracks):
@@ -404,10 +419,11 @@ def find_interests_by_lifting_switches(
         # --- вычисление разрыва между текущим треком и следующим ---
         t_curr = datetime.datetime.strptime(t_curr_dt, "%Y-%m-%d %H:%M:%S")
         t_next = datetime.datetime.strptime(t_next_dt, "%Y-%m-%d %H:%M:%S")
+
+        _update_stop_state(t_curr_dt, cur_speed)
+
         gap_sec = (t_next - t_curr).total_seconds()
-
         GAP_THRESHOLD = settings.config.getint("Interests", "GAP_THRESHOLD_SEC", fallback=10)
-
         if gap_sec > GAP_THRESHOLD:
             logger.debug(f"Обнаружен разрыв в треках: {t_curr} → {t_next} = {gap_sec:.1f}s")
 
@@ -534,20 +550,20 @@ def find_interests_by_lifting_switches(
         if euro_on or kgo_on:
             cargo_type = "КГО" if kgo_on else "Контейнер"
             logger.info(f"{reg_id}: [SWITCH] Срабатывание концевика в {timestamp}, EuroIO(bit {euro_bit_idx})={bits[euro_bit_idx]}" + (f", KGOIO(bit {kgo_bit_idx})={bits[kgo_bit_idx]}" if kgo_bit_idx is not None else ""))
+
             if track.get("sp") > min_speed_for_switch_detect:
                 logger.debug(f"{reg_id}: [SWITCH] Игнор: скорость {track.get('sp')} > {min_speed_for_switch_detect}")
                 i += 1
-                stop_first = None
-                continue
-            if not stop_first:
-                logger.debug(f"Найдена первая остановка - {current_dt}")
-                stop_first = current_dt
-            if not (current_dt - stop_first).total_seconds() > settings.config.getint("Interests", "MIN_STOP_DURATION_SEC"):
-                logger.info(f"{reg_id} [SWITCH] Время прошедшее с остановки слишком маленькое - игнорируем. {current_dt}")
+
+            # 2) Проверяем, что перед концевиком фактически успели постоять
+            if last_stop_started_at is None or (t_curr_dt - last_stop_started_at).total_seconds() < min_stop_duration:
+                dur = 0 if last_stop_started_at is None else (t_curr_dt - last_stop_started_at).total_seconds()
+                logger.info(
+                    f"{reg_id} [SWITCH] Недостаточная длительность остановки перед концевиком ({dur:.1f}s < {min_stop_duration}s) — игнорируем."
+                )
                 i += 1
                 continue
 
-            stop_first = None
             logger.debug(f"{reg_id}: [SWITCH] Принято: {cargo_type} в {timestamp}")
             switch_events = []
 
