@@ -411,16 +411,16 @@ def find_interests_by_lifting_switches(
             break
 
         track = tracks[i]
-        next_track = tracks[i+1]
-        cur_speed = track.get("sp")
-        t_curr_dt = track.get("gt")
-        t_next_dt = next_track.get("gt")
+        next_track = tracks[i + 1]
+        cur_speed = int(track.get("sp") or 0)
+        t_curr_dt = track.get("gt")  # строка (для логов)
+        t_next_dt = next_track.get("gt")  # строка (для логов)
 
         # --- вычисление разрыва между текущим треком и следующим ---
         t_curr = datetime.datetime.strptime(t_curr_dt, "%Y-%m-%d %H:%M:%S")
         t_next = datetime.datetime.strptime(t_next_dt, "%Y-%m-%d %H:%M:%S")
 
-        _update_stop_state(t_curr_dt, cur_speed)
+        _update_stop_state(t_curr, cur_speed)
 
         gap_sec = (t_next - t_curr).total_seconds()
         GAP_THRESHOLD = settings.config.getint("Interests", "GAP_THRESHOLD_SEC", fallback=10)
@@ -479,7 +479,7 @@ def find_interests_by_lifting_switches(
                         time_before = find_first_stable_stop(
                             tracks, i, alarm_dt, settings, first_interest, start_tracks_search_time, reg_id
                         )
-                        logger.debug(f"Кейс 2. Оцененный time_after: {time_before}")
+                        logger.debug(f"Кейс 2. Оцененный time_before: {time_before}")
                 else:
                     time_before = find_first_stable_stop(tracks, i, alarm_dt, settings, first_interest,
                                                          start_tracks_search_time, reg_id)
@@ -551,16 +551,17 @@ def find_interests_by_lifting_switches(
             cargo_type = "КГО" if kgo_on else "Контейнер"
             logger.info(f"{reg_id}: [SWITCH] Срабатывание концевика в {timestamp}, EuroIO(bit {euro_bit_idx})={bits[euro_bit_idx]}" + (f", KGOIO(bit {kgo_bit_idx})={bits[kgo_bit_idx]}" if kgo_bit_idx is not None else ""))
 
-            if track.get("sp") > min_speed_for_switch_detect:
-                logger.debug(f"{reg_id}: [SWITCH] Игнор: скорость {track.get('sp')} > {min_speed_for_switch_detect}")
+            if int(track.get("sp") or 0) > min_speed_for_switch_detect:
+                logger.debug(
+                    f"{reg_id}: [SWITCH] Игнор: скорость {int(track.get('sp') or 0)} > {min_speed_for_switch_detect}")
                 i += 1
+                continue
 
-            # 2) Проверяем, что перед концевиком фактически успели постоять
-            if last_stop_started_at is None or (t_curr_dt - last_stop_started_at).total_seconds() < min_stop_duration:
-                dur = 0 if last_stop_started_at is None else (t_curr_dt - last_stop_started_at).total_seconds()
-                logger.info(
-                    f"{reg_id} [SWITCH] Недостаточная длительность остановки перед концевиком ({dur:.1f}s < {min_stop_duration}s) — игнорируем."
-                )
+            # 2) Предчек: стояли ли достаточно до концевика
+            # Сравниваем datetime с datetime (t_curr и last_stop_started_at)
+            if (last_stop_started_at is None) or ((t_curr - last_stop_started_at).total_seconds() < min_stop_duration):
+                dur = 0 if last_stop_started_at is None else (t_curr - last_stop_started_at).total_seconds()
+                logger.info(f"{reg_id} [SWITCH] Недостаточная длительность остановки перед концевиком ({dur:.1f}s < {min_stop_duration}s) — игнорируем.")
                 i += 1
                 continue
 
@@ -595,7 +596,7 @@ def find_interests_by_lifting_switches(
             while lifting_end_idx + 1 < len(tracks):
                 next_track = tracks[lifting_end_idx + 1]
                 next_s1 = next_track.get("s1")
-                next_spd = next_track.get("sp") or 0
+                next_spd = int(next_track.get("sp") or 0)
                 try:
                     next_s1_int = int(next_s1)
                 except (ValueError, TypeError):
@@ -634,10 +635,6 @@ def find_interests_by_lifting_switches(
                     lifting_end_idx += 1
                     if (ts - move_started_at) >= min_move_duration:
                         break
-
-            logger.debug(f"{reg_id}: [Конец интереса] Вышли из цикла поиска движения после последнего концевика")
-            time_after, last_stop_idx = find_stop_after_lifting(tracks, last_switch_index + 1, settings, logger, reg_id)
-            used_fallback = False
 
             logger.debug(f"{reg_id}: [Конец интереса] Вышли из цикла поиска движения после последнего концевика")
             time_after, last_stop_idx = find_stop_after_lifting(tracks, last_switch_index + 1, settings, logger, reg_id)
