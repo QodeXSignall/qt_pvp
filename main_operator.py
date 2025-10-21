@@ -1,3 +1,4 @@
+from qt_pvp.interest_merge_funcs import merge_overlapping_interests
 from qt_pvp.cms_interface import functions as cms_api_funcs
 from qt_pvp import functions as main_funcs
 from qt_pvp.cms_interface import cms_http
@@ -159,7 +160,7 @@ class Main:
             return True
 
         logger.info(f"{reg_id}: Найдено {len(interests)} интересов")
-        interests = main_funcs.merge_overlapping_interests(interests)
+        interests = merge_overlapping_interests(interests)
         #interests = main_funcs.filter_already_processed(reg_id, interests)
         logger.info(f"{reg_id}: К запуску {len(interests)} интересов (после фильтра processed).")
 

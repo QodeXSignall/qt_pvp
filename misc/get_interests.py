@@ -1,11 +1,12 @@
+from  qt_pvp.interest_merge_funcs import merge_overlapping_interests
 from qt_pvp import functions as main_funcs
 from main_operator import Main
 import asyncio
 
 
 REG_ID = "018270348452"
-START_TIME = "2025-10-18 06:00:00"
-END_TIME = "2025-10-18 20:30:00"
+START_TIME = "2025-10-18 08:38:00"
+END_TIME = "2025-10-18 08:45:00"
 
 
 inst = Main()
@@ -13,7 +14,7 @@ reg_info = main_funcs.get_reg_info(reg_id=REG_ID)
 async def local_get_interests_async():
     await inst.login()
     interests = await inst.get_interests_async(reg_id=REG_ID, reg_info=reg_info, start_time=START_TIME, stop_time=END_TIME)
-    interests = main_funcs.merge_overlapping_interests(interests)
+    interests = merge_overlapping_interests(interests)
     for interest in interests:
         print(interest)
 

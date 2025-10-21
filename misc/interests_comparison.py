@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from typing import List, Tuple, Dict, Set
 from qt_pvp import functions as main_funcs
 from main_operator import Main
+import asyncio
 import os
 
 
@@ -83,7 +84,7 @@ def diff_sets(expected: Set[str], detected: Set[str], eps_sec: int = 0) -> Tuple
     missing -= matched_exp
     return new, missing
 
-def main(day_str = DAY_STR, reg_id = REG_ID):
+async def main(day_str = DAY_STR, reg_id = REG_ID):
     print(f"\nWorking with day {day_str}")
     client = Client(WEBDAV_OPTIONS)
 
@@ -106,8 +107,9 @@ def main(day_str = DAY_STR, reg_id = REG_ID):
 
     # 3) Поиск интересов в системе
     inst = Main()
+    await inst.login()
     reg_info = main_funcs.get_reg_info(reg_id=reg_id)
-    interests = inst.get_interests(reg_id=reg_id, reg_info=reg_info,
+    interests = await inst.get_interests_async(reg_id=reg_id, reg_info=reg_info,
                                    start_time=start_time, stop_time=stop_time)
     #for interest in interests:
     #    print(interest["name"])
@@ -132,7 +134,10 @@ def main(day_str = DAY_STR, reg_id = REG_ID):
 
 
 if __name__ == "__main__":
-    for day in ["2025.10.08", "2025.10.06"]:
+    for day in [
+        "2025.10.18",
+        #"2025.10.19"
+    ]:
         #day = "2025.08.17"
-        reg_id = "108410"
-        main(day_str=day, reg_id=reg_id)
+        reg_id = "018270348452"
+        asyncio.run(main(day_str=day, reg_id=reg_id))
