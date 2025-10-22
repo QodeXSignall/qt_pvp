@@ -711,16 +711,23 @@ def find_interests_by_lifting_switches(
                 i = lifting_end_idx + 1
                 continue
 
-            # Применяем сдвиг - фото ПОСЛЕ за несколько секунд до движения
-            adjust_secs = settings.config.getint("Interests", "PHOTO_AFTER_SHIFT_SEC")
-            raw_time_after = datetime.datetime.strptime(time_after, "%Y-%m-%d %H:%M:%S")
-            adjusted_time_after = raw_time_after - datetime.timedelta(seconds=adjust_secs)
-            logger.debug(f"{reg_id}: Двигаем время конца интереса на {adjust_secs}с")
-            time_after = adjusted_time_after.strftime("%Y-%m-%d %H:%M:%S")
+            before_adjust_secs = settings.config.getint("Interests", "INTEREST_BEFORE_SHIFT_SEC")
+            if before_adjust_secs:
+                logger.debug(f"{reg_id}: Двигаем время начала интереса на {before_adjust_secs}с")
+                raw_time_before = datetime.datetime.strptime(time_before, settings.TIME_FMT)
+                adjusted_time_before= raw_time_before + datetime.timedelta(seconds=before_adjust_secs)
+                time_before = adjusted_time_before.strftime(settings.TIME_FMT)
 
-            last_alarm_dt = datetime.datetime.strptime(tracks[last_switch_index].get("gt"), "%Y-%m-%d %H:%M:%S")
+            after_adjust_secs = settings.config.getint("Interests", "PHOTO_AFTER_SHIFT_SEC")
+            if after_adjust_secs:
+                raw_time_after = datetime.datetime.strptime(time_after, settings.TIME_FMT)
+                adjusted_time_after = raw_time_after - datetime.timedelta(seconds=after_adjust_secs)
+                logger.debug(f"{reg_id}: Двигаем время конца интереса на {after_adjust_secs}с")
+                time_after = adjusted_time_after.strftime(settings.TIME_FMT)
+
+            last_alarm_dt = datetime.datetime.strptime(tracks[last_switch_index].get("gt"), settings.TIME_FMT)
             time_30_after_dt = last_alarm_dt + datetime.timedelta(seconds=sec_after)
-            time_30_after = time_30_after_dt.strftime("%Y-%m-%d %H:%M:%S")
+            time_30_after = time_30_after_dt.strftime(settings.TIME_FMT)
 
             end_time = min(time_after, time_30_after)
             if time_before and time_after:

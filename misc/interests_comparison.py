@@ -102,8 +102,8 @@ async def main(day_str = DAY_STR, reg_id = REG_ID):
     # 2) Интервал для анализа = по первым/последним папкам ±60с
     _, s_first, _ = parse_folder_name(folder_names[0])
     _, _, e_last  = parse_folder_name(folder_names[-1])
-    start_time = (s_first - timedelta(seconds=60)).strftime(TIME_FMT)
-    stop_time  = (e_last  + timedelta(seconds=60)).strftime(TIME_FMT)
+    start_time = (s_first - timedelta(seconds=3600)).strftime(TIME_FMT)
+    stop_time  = (e_last  + timedelta(seconds=600)).strftime(TIME_FMT)
 
     # 3) Поиск интересов в системе
     inst = Main()
@@ -111,8 +111,8 @@ async def main(day_str = DAY_STR, reg_id = REG_ID):
     reg_info = main_funcs.get_reg_info(reg_id=reg_id)
     interests = await inst.get_interests_async(reg_id=reg_id, reg_info=reg_info,
                                    start_time=start_time, stop_time=stop_time)
-    #for interest in interests:
-    #    print(interest["name"])
+    for interest in interests:
+        print(interest["name"])
     detected_names = set(i["name"] for i in interests)
 
     expected_names = set(folder_names)
@@ -135,8 +135,8 @@ async def main(day_str = DAY_STR, reg_id = REG_ID):
 
 if __name__ == "__main__":
     for day in [
-        "2025.10.18",
-        #"2025.10.19"
+        "2025.10.17",
+        #"2025.10.20"
     ]:
         #day = "2025.08.17"
         reg_id = "018270348452"
