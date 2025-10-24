@@ -586,7 +586,7 @@ def find_interests_by_lifting_switches(
         euro_on = bits[euro_bit_idx] == '1'
         kgo_on = (kgo_bit_idx is not None) and (bits[kgo_bit_idx] == '1')
         if euro_on or kgo_on:
-            cargo_type = "КГО" if kgo_on else "Контейнер"
+            cargo_type = "Евро-контейнер" if kgo_on else "Бункер"
             logger.info(f"{reg_id}: [SWITCH] Срабатывание концевика в {timestamp}, EuroIO(bit {euro_bit_idx})={bits[euro_bit_idx]}" + (f", KGOIO(bit {kgo_bit_idx})={bits[kgo_bit_idx]}" if kgo_bit_idx is not None else ""))
 
             if int(track.get("sp") or 0) > min_speed_for_switch_detect:
@@ -611,8 +611,11 @@ def find_interests_by_lifting_switches(
                 break
 
             # Находим время для фото ДО (Последнее время в окне стабильных остановок)
+            max_lookback_seconds = None
+            if cargo_type == "Бункер":
+                max_lookback_seconds = 1500
             time_before = find_first_stable_stop(
-                tracks, i, current_dt, settings, first_interest, start_tracks_search_time, reg_id)
+                tracks, i, current_dt, settings, first_interest, start_tracks_search_time, reg_id, max_lookback_seconds)
             if not time_before:
                 logger.warning(f"{reg_id}: [BEFORE] Не найдена остановка до сработки концевика в {timestamp}")
                 if first_interest:
@@ -1110,7 +1113,7 @@ def find_first_stable_stop(
     first_interest=False,
     start_tracks_search_time=None,
     reg_id=None,
-):
+    max_lookback_seconds=None,):
     """
     Возвращает:
       - начало ближайшей подтверждённой остановки ДО концевика, либо
@@ -1120,9 +1123,9 @@ def find_first_stable_stop(
     """
 
     cfg = settings.config
-    cutoff_time = current_dt - datetime.timedelta(
-        seconds=cfg.getint("Interests", "MAX_LOOKBACK_SECONDS")
-    )
+    if not max_lookback_seconds:
+        max_lookback_seconds = cfg.getint("Interests", "MAX_LOOKBACK_SECONDS")
+    cutoff_time = current_dt - datetime.timedelta(seconds=max_lookback_seconds)
     min_stop_speed = cfg.getint("Interests", "MIN_STOP_SPEED")
     min_stop_duration_sec = cfg.getint("Interests", "MIN_STOP_DURATION_SEC")
     min_move_speed = cfg.getint("Interests", "MIN_MOVE_SPEED")
@@ -1168,7 +1171,7 @@ def find_first_stable_stop(
         is_move_confirm = (v >= min_move_speed)
 
         logger.debug(
-            f"{reg_id}: [Поиск конца интереса] i={i}, t={t}, v={v}, "
+            f"{reg_id}: [Поиск начала интереса] i={i}, t={t}, v={v}, "
             f"stop_active={stop_active}, stop_low_dur={stop_low_dur:.1f}, move_dur={move_after_stop_dur:.1f}"
         )
 
@@ -1272,143 +1275,6 @@ def find_first_stable_stop(
     # Если после движения не нашли новую остановку — возвращаем исходного кандидата
     logger.debug(f"{reg_id}: [SHIFT] после движения в окне новая остановка не найдена — возвращаем {cand_start_gt}")
     return cand_start_gt
-
-def find_first_stable_stop_old(
-    tracks,
-    start_index,
-    current_dt,
-    settings,
-    first_interest=False,
-    start_tracks_search_time=None,  # для совместимости
-    reg_id=None,
-):
-    """
-    Ищем первую (от конца) стабильную остановку перед срабатыванием,
-    устойчивую к кратковременным всплескам скорости.
-
-    Условия:
-    - Остановка: скорость <= MIN_STOP_SPEED, суммарная длительность низкой скорости >= MIN_STOP_DURATION_SEC.
-    - Подтверждение выхода из остановки: скорость >= MIN_MOVE_SPEED непрерывно (по времени) >= MIN_MOVE_DURATION_SEC.
-      Всплески короче этого порога считаем шумом и НЕ завершаем остановку.
-    """
-
-
-    logger.debug(f"{reg_id}: Ищем движение и остановку до первого срабатывания концевика")
-
-    cfg = settings.config
-    cutoff_time = current_dt - datetime.timedelta(
-        seconds=cfg.getint("Interests", "MAX_LOOKBACK_SECONDS")
-    )
-    min_stop_speed = cfg.getint("Interests", "MIN_STOP_SPEED")
-    min_stop_duration_sec = cfg.getint("Interests", "MIN_STOP_DURATION_SEC")
-    min_move_speed = cfg.getint("Interests", "MIN_MOVE_SPEED")  # БЕЗ смещений и гистерезиса
-    min_move_duration_sec = int(cfg.get("Interests", "MIN_MOVE_DURATION_SEC",
-                                        fallback=str(min_stop_duration_sec)))
-
-    # Защитный лимит для больших разрывов между точками при накоплении длительностей (опционально)
-    sample_gap_cap = cfg.getint("Interests", "SAMPLE_GAP_CAP_SEC", fallback=20)
-
-    def ts(idx: int) -> datetime.datetime:
-        return datetime.datetime.strptime(tracks[idx]["gt"], "%Y-%m-%d %H:%M:%S")
-
-    def spd(idx: int) -> int:
-        return int(tracks[idx].get("sp") or 0)
-
-    if not tracks:
-        logger.warning(f"{reg_id}: [ОСТАНОВКА НЕ НАЙДЕНА] пустой массив треков")
-        return None
-
-    # Ограничим окно поиска по cutoff_time и start_index
-    # найдём первый индекс, чей ts >= cutoff_time
-    # (линейный проход тоже подойдёт; этот — O(log N))
-    times = [ts(i) for i in range(len(tracks))]
-    start_window_idx = bisect_left(times, cutoff_time)
-    end_window_idx = max(0, min(start_index, len(tracks) - 1))
-    if start_window_idx > end_window_idx:
-        logger.warning(f"{reg_id}: [ОСТАНОВКА НЕ НАЙДЕНА] окно пусто")
-        return None
-
-    # Скан вперёд по времени: start_window_idx..end_window_idx
-    stop_active = False
-    stop_start_i = None          # индекс начала текущей остановки (по низкой скорости)
-    stop_low_dur = 0.0           # суммарная длительность низкой скорости в текущей остановке (сек)
-
-    move_after_stop_dur = 0.0    # длительность подтверждённого движения (скорость >= min_move_speed) после остановки
-    candidate_start_gt = None    # старт последней валидной остановки (которую подтвердили движением)
-
-    prev_t = times[start_window_idx]
-
-    for i in range(start_window_idx, end_window_idx + 1):
-        t = times[i]
-        dt_raw = (t - prev_t).total_seconds() if i > start_window_idx else 0.0
-
-        dt_eff = min(max(dt_raw, 0.0), sample_gap_cap)  # ограничиваем вклад одного шага
-        v = spd(i)
-
-        is_stop = (v <= min_stop_speed)
-        is_move_confirm = (v >= min_move_speed)
-
-        logger.debug(
-            f"{reg_id}: [Начало интереса] i={i}, t={t}, v={v}, "
-            f"stop_active={stop_active}, stop_low_dur={stop_low_dur:.1f}, "
-            f"move_after_stop_dur={move_after_stop_dur:.1f}"
-        )
-
-        if is_stop:
-            # в зоне остановки — накапливаем низкоскоростную длительность
-            if not stop_active:
-                stop_active = True
-                stop_start_i = i
-                stop_low_dur = 0.0
-            stop_low_dur += dt_eff
-            # любая низкая скорость обнуляет подтверждение движения
-            move_after_stop_dur = 0.0
-
-        else:
-            # вне зоны остановки (скорость > min_stop_speed)
-            if stop_active:
-                if is_move_confirm:
-                    # накапливаем подтверждённое движение
-                    move_after_stop_dur += dt_eff
-                    # если и сама остановка была достаточной, и движение держится — фиксируем кандидата
-                    if move_after_stop_dur >= min_move_duration_sec and stop_low_dur >= min_stop_duration_sec:
-                        candidate_start_gt = tracks[stop_start_i]["gt"]
-                        logger.debug(
-                            f"{reg_id}: [ДВИЖЕНИЕ ДО ОСТАНОВКИ] подтверждено: "
-                            f"stop_low_dur={stop_low_dur:.1f}s, move_dur={move_after_stop_dur:.1f}s, "
-                            f"start={candidate_start_gt}"
-                        )
-                        # КЛЮЧЕВОЕ: закрываем текущую остановку, чтобы следующая низкая скорость создала новую
-                        stop_active = False
-                        stop_start_i = None
-                        stop_low_dur = 0.0
-                        move_after_stop_dur = 0.0
-                        # Не выходим из цикла: ищем более поздние кандидаты, чтобы взять самый «свежий»
-                else:
-                    # «полудвижение» — сбрасываем подтверждение, но остановку ещё не закрываем
-                    move_after_stop_dur = 0.0
-            # если остановки ещё не было — ничего не делаем
-
-        prev_t = t
-
-    best = None
-
-    if stop_active and stop_low_dur >= min_stop_duration_sec:
-        # текущая остановка идет до конца окна — берем её начало
-        best = tracks[stop_start_i]["gt"]
-
-    if candidate_start_gt is not None:
-        # если подтвержденный кандидат позже текущего best — берем его; иначе оставляем best
-        if best is None or candidate_start_gt > best:
-            best = candidate_start_gt
-
-    if best is not None:
-        logger.debug(f"{reg_id}: [ДВИЖЕНИЕ ДО ОСТАНОВКИ] Лучший кандидат выбран - {best}")
-        return best
-
-    logger.warning(f"{reg_id}:  [ОСТАНОВКА НЕ НАЙДЕНА]")
-    return None
-
 
 def seconds_since_midnight(dt: datetime.datetime) -> int:
     midnight = dt.replace(hour=0, minute=0, second=0, microsecond=0)
