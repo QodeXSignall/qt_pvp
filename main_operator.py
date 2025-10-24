@@ -4,7 +4,6 @@ from qt_pvp.qt_rm_client import QTRMAsyncClient
 from qt_pvp import functions as main_funcs
 from qt_pvp.cms_interface import cms_http
 from qt_pvp.cms_interface import cms_api
-from qt_pvp.cms_interface import limits
 from qt_pvp import cloud_uploader
 from qt_pvp.logger import logger
 from qt_pvp.data import settings
@@ -27,6 +26,7 @@ class Main:
         self._per_device_sem = {}
         self._devices_sem = asyncio.Semaphore(settings.config.getint("Process", "MAX_DEVICES_CONCURRENT"))
         self.ignore_points = geo_funcs.get_ignore_points()
+        self._interest_refill_in_progress = set()
         self.qt_rm_client = QTRMAsyncClient(base_url=settings.qt_rm_url,
                                             username=settings.qt_rm_login,
                                             password=settings.qt_rm_password)
@@ -80,8 +80,12 @@ class Main:
             tracks, alarm_reports = await asyncio.gather(tracks_task, alarms_task)
             tracks = [t for page in tracks for t in (page.get("tracks") or [])]
 
+            all_alarms = []
+            for page in alarm_reports:
+                all_alarms.extend(page.get("alarms") or [])
+
             prepared = cms_api_funcs.prepare_alarms(
-                raw_alarms = alarm_reports[0].get("alarms") or [],
+                raw_alarms=all_alarms,
                 reg_cfg=reg_info,
                 allowed_atp=frozenset({19, 20, 21, 22}),
                 min_stop_speed_kmh=settings.config.getint("Interests", "MIN_STOP_SPEED") / 10.0,
@@ -133,40 +137,37 @@ class Main:
             logger.debug(f"{reg_id}. Игнорируем регистратор, поскольку в states.json параметр ignore=true.")
             return
 
-        # Временные границы окна
-        TIME_FMT = "%Y-%m-%d %H:%M:%S"
-        start_time = start_time or main_funcs.get_reg_last_upload_time(reg_id)
-        end_time = end_time or begin_time.strftime(TIME_FMT)
+        pending = main_funcs.get_pending_interests(reg_id)
+        if not pending:
+            # пополняем очередь, если пора (антиспам: теперь завязан на last_upload_time)
+            await self._refill_pending_interests_if_due(reg_id)
+            pending = main_funcs.get_pending_interests(reg_id)
 
-        # Разбиваем длинные интервалы на отрезки
-        time_difference = (
-                datetime.datetime.strptime(end_time, TIME_FMT) -
-                datetime.datetime.strptime(start_time, TIME_FMT)
-        ).total_seconds()
-
-        max_span = settings.config.getint("Interests", "DOWNLOADING_INTERVAL") * 60
-        if time_difference > max_span:
-            end_time = (
-                    datetime.datetime.strptime(start_time, TIME_FMT) +
-                    datetime.timedelta(seconds=max_span)
-            ).strftime(TIME_FMT)
+        if pending:
+            interests = pending
+            logger.info(f"{reg_id}: Берём {len(interests)} интерес(а/ов) из очереди pending_interests.")
         else:
-            logger.debug(f"{reg_id}. Time difference is too short ({time_difference} сек.)")
-            return
-
-        logger.info(f"{reg_id} Начало: {start_time}, Конец: {end_time}")
-
-        # Определяем интересные интервалы
-        interests = await self.get_interests_async(reg_id, reg_info, start_time, end_time)
-        if not interests:
-            logger.info(f"{reg_id}: Интересы не найдены в интервале {start_time} - {end_time}")
-            main_funcs.save_new_reg_last_upload_time(reg_id, end_time)
+            # Если очередь пуста и проверка давности не прошла — делать лишних запросов не будем
+            logger.info(f"{reg_id}: Очередь pending_interests пуста, и наполнять сейчас рано — завершаем.")
             return True
 
         logger.info(f"{reg_id}: Найдено {len(interests)} интересов")
         interests = merge_overlapping_interests(interests)
         #interests = main_funcs.filter_already_processed(reg_id, interests)
         logger.info(f"{reg_id}: К запуску {len(interests)} интересов (после фильтра processed).")
+
+        # --- NEW: батч по N интересов из конфига ---
+        total_found = len(interests)
+        # сортируем по началу, чтобы обрабатывать по хронологии и корректно двигать last_upload_time
+        interests = sorted(interests, key=lambda it: it.get("beg_sec", 0))
+
+        max_per_batch = settings.config.getint("Process", "MAX_INTERESTS_PER_BATCH", fallback=8)
+        if total_found > max_per_batch:
+            logger.info(f"{reg_id}: Берём в работу только {max_per_batch} из {total_found} интересов (батч). Остальные — в следующий цикл.")
+            interests = interests[:max_per_batch]
+        else:
+            logger.info(f"{reg_id}: Влезают все интересы ({total_found}) в одну пачку.")
+
 
         async def _process_one_interest(interest: dict) -> str | None:
             # ограничители: глобально и на устройство
@@ -269,14 +270,15 @@ class Main:
                 upload_status = await self.process_frames_before_after(
                     reg_id, interest, channels_paths  # ← передаём словарь!!!
                 )
-                logger.info(f"Результат загрузки изображений: {upload_status}")
+                ok_frames = bool(upload_status and upload_status.get("upload_status"))
+                logger.info(f"Результат загрузки изображений: {ok_frames}")
 
                 # 7) чистим локальные клипы (кроме «полного» по нужному каналу)
                 removed = cms_api.delete_videos_except(
                     videos_by_channel=channels_paths,
                     keep_channel_id=chanel_id if not interest_video_exists else None
                 )
-                all_done_ok = bool(upload_status and (interest_video_exists or full_clip_upload_status))
+                all_done_ok = bool(ok_frames and (interest_video_exists or full_clip_upload_status))
 
                 if full_clip_path:
                     if full_clip_upload_status:
@@ -308,6 +310,10 @@ class Main:
                         logger.info(
                             f"{reg_id}: Удаляем временную директорию интереса {interest_name}. ({interest_temp_folder}).")
                         shutil.rmtree(interest_temp_folder)
+                    try:
+                        main_funcs.remove_pending_interest(reg_id, interest_name)
+                    except Exception as e:
+                        logger.warning(f"{reg_id}: Не удалось удалить {interest_name} из pending_interests: {e}")
 
                 logger.info(f"{reg_id}: V2 завершено. Upload={upload_status}. Удалено видеофайлов: {removed}.")
 
@@ -356,14 +362,13 @@ class Main:
 
         # Обновляем last_upload_time ОДИН раз — максимумом из завершённых интересов,
         # либо (если все упали/ничего не пришло) — концом окна end_time
-        if end_times:
-            new_last = max(end_times)
-        else:
-            new_last = end_time  # Повторяем снова, пока не получим данные
+        #if end_times:
+        #    new_last = max(end_times)
+        #else:
+        #    new_last = end_time  # Повторяем снова, пока не получим данные
         #main_funcs.save_new_reg_last_upload_time(reg_id, new_last)
-        main_funcs.save_new_reg_last_upload_time(reg_id, new_last)
-        logger.info(
-            f"{reg_id}. Пакет интересов завершён: {len(end_times)}/{len(interests)}; last_upload_time -> {new_last}")
+        #main_funcs.save_new_reg_last_upload_time(reg_id, new_last)
+        logger.info(f"{reg_id}. Пакет интересов завершён: {len(end_times)}/{len(interests)};")
 
     async def get_channels_to_download_pics(self, interest_cloud_path):
         pics_after_folder = posixpath.join(interest_cloud_path, "after_pics")
@@ -463,6 +468,76 @@ class Main:
                 t.add_done_callback(self._running.discard)
 
             await asyncio.sleep(3)
+
+    async def _refill_pending_interests_if_due(self, reg_id: str) -> None:
+        """
+        Пополняет очередь pending_interests для reg_id, если наступил срок:
+          - сейчас > last_upload_time + 600 сек
+        Делает догонку посуточно: [last_upload_time → конец дня], ... пока не дойдём до сегодняшнего,
+        затем [начало сегодняшнего → сейчас].
+        """
+        if reg_id in self._interest_refill_in_progress:
+            return
+        self._interest_refill_in_progress.add(reg_id)
+        try:
+            TIME_FMT = "%Y-%m-%d %H:%M:%S"
+
+            reg_info = main_funcs.get_reg_info(reg_id)
+            last_up_str = reg_info.get("last_upload_time")
+            if not last_up_str:
+                last_up_str = (datetime.datetime.now() - datetime.timedelta(days=7)).strftime(TIME_FMT)
+
+            last_up = datetime.datetime.strptime(last_up_str, TIME_FMT)
+            now = datetime.datetime.now()
+            # антиспам: только если вышло окно 600с
+            if (now - last_up).total_seconds() < 600:
+                return  # рано
+
+            # будем накапливать найденные интересы сюда
+            collected: list[dict] = []
+
+            # 1) добегаем до конца того дня, если last_upload_time не сегодня
+            def day_end(dt: datetime.datetime) -> datetime.datetime:
+                return dt.replace(hour=23, minute=59, second=59)
+
+            def day_start(dt: datetime.datetime) -> datetime.datetime:
+                return dt.replace(hour=0, minute=0, second=0)
+
+            cur = last_up
+            today = now.date()
+
+            while cur.date() < today:
+                st = cur.strftime(TIME_FMT)
+                en_dt = day_end(cur)
+                en = en_dt.strftime(TIME_FMT)
+
+                reg_cfg = main_funcs.get_reg_info(reg_id) or main_funcs.create_new_reg(reg_id, plate=None)
+                interests = await self.get_interests_async(reg_id, reg_cfg, st, en)
+                if interests:
+                    interests = merge_overlapping_interests(interests)
+                    collected.extend(interests)
+                # после закрытия дня двигаем last_upload_time до конца дня
+                main_funcs.save_new_reg_last_upload_time(reg_id, en)
+                cur = en_dt + datetime.timedelta(seconds=1)
+
+            # 2) сегодняшний хвост: от max(cur, day_start(now)) до now
+            if cur <= now:
+                st = cur.strftime(TIME_FMT)
+                en = now.strftime(TIME_FMT)
+                reg_cfg = main_funcs.get_reg_info(reg_id) or main_funcs.create_new_reg(reg_id, plate=None)
+                interests = await self.get_interests_async(reg_id, reg_cfg, st, en)
+                if interests:
+                    interests = merge_overlapping_interests(interests)
+                    collected.extend(interests)
+                # фиксируем last_upload_time = now
+                main_funcs.save_new_reg_last_upload_time(reg_id, en)
+
+            # 3) кладём всё найденное в очередь (с дедупом по имени — реализован в append_*).
+            if collected:
+                main_funcs.append_pending_interests(reg_id, collected)
+
+        finally:
+            self._interest_refill_in_progress.discard(reg_id)
 
 
 async def _run():

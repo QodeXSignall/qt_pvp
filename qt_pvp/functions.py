@@ -299,16 +299,34 @@ def get_reg_last_upload_time(reg_id):
 
 
 def save_new_reg_last_upload_time(reg_id: str, timestamp: str):
+    TIME_FMT = "%Y-%m-%d %H:%M:%S"
+    try:
+        new_dt = datetime.datetime.strptime(timestamp, TIME_FMT)
+    except Exception:
+        logger.warning(f"{reg_id}. Некорректный формат last_upload_time: {timestamp} — игнор.")
+        return
+
     with FileLock(LOCK_PATH):
         states = _load_states()
         regs = states.setdefault("regs", {})
-        if reg_id not in regs:
-            regs[reg_id] = _default_new_reg_info()  # ← вместо create_new_reg(...)
-        # ensure только in-place
+        reg = regs.setdefault(reg_id, _default_new_reg_info())
         ensure_alarms_structure_inplace(regs, reg_id)
-        regs[reg_id]["last_upload_time"] = timestamp
-        _atomic_save_states(states)
-    logger.info(f"{reg_id}. Обновлен `last_upload_time`: {timestamp}")
+
+        cur_str = reg.get("last_upload_time")
+        cur_dt = None
+        if cur_str:
+            try:
+                cur_dt = datetime.datetime.strptime(cur_str, TIME_FMT)
+            except Exception:
+                pass
+
+        if cur_dt is None or new_dt > cur_dt:
+            reg["last_upload_time"] = timestamp
+            _atomic_save_states(states)
+            logger.info(f"{reg_id}. Обновлен `last_upload_time`: {timestamp}")
+        else:
+            logger.debug(f"{reg_id}. Пропуск обновления last_upload_time (новое {timestamp} <= текущее {cur_str}).")
+
 
 def video_remover_cycle():
     while True:
@@ -523,3 +541,49 @@ def merge_overlapping_interests(interests: List[dict]) -> List[dict]:
 
     merged.append(current)
     return merged
+
+def get_pending_interests(reg_id: str) -> list[dict]:
+    with FileLock(LOCK_PATH):
+        states = _load_states()
+        regs = states.setdefault("regs", {})
+        reg = regs.setdefault(reg_id, _default_new_reg_info())
+        ensure_alarms_structure_inplace(regs, reg_id)
+        return list(reg.get("pending_interests", []))
+
+def set_pending_interests(reg_id: str, interests: list[dict]) -> None:
+    with FileLock(LOCK_PATH):
+        states = _load_states()
+        regs = states.setdefault("regs", {})
+        reg = regs.setdefault(reg_id, _default_new_reg_info())
+        ensure_alarms_structure_inplace(regs, reg_id)
+        reg["pending_interests"] = list(interests)
+        _atomic_save_states(states)
+
+def append_pending_interests(reg_id: str, interests: list[dict]) -> None:
+    if not interests:
+        return
+    with FileLock(LOCK_PATH):
+        states = _load_states()
+        regs = states.setdefault("regs", {})
+        reg = regs.setdefault(reg_id, _default_new_reg_info())
+        ensure_alarms_structure_inplace(regs, reg_id)
+        cur = reg.get("pending_interests", [])
+        # дедуп по имени интереса
+        seen = {it.get("name") for it in cur if isinstance(it, dict)}
+        for it in interests:
+            nm = (it or {}).get("name")
+            if nm and nm not in seen:
+                cur.append(it)
+                seen.add(nm)
+        reg["pending_interests"] = cur
+        _atomic_save_states(states)
+
+def remove_pending_interest(reg_id: str, interest_name: str) -> None:
+    with FileLock(LOCK_PATH):
+        states = _load_states()
+        regs = states.setdefault("regs", {})
+        reg = regs.setdefault(reg_id, _default_new_reg_info())
+        ensure_alarms_structure_inplace(regs, reg_id)
+        cur = reg.get("pending_interests", [])
+        reg["pending_interests"] = [it for it in cur if it.get("name") != interest_name]
+        _atomic_save_states(states)

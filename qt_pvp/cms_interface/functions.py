@@ -395,7 +395,6 @@ def find_interests_by_lifting_switches(
     i = 0
     first_interest = True   # Используем в случаях, когда для первого интереса не найдена начальная остановка в заданных треках
     reg_cfg = get_reg_info(reg_id) if reg_id else None
-    logger.debug("R")
 
     try:
         euro_alarm_cfg = int((reg_cfg or {}).get("euro_container_alarm", 4))
@@ -407,7 +406,6 @@ def find_interests_by_lifting_switches(
     except Exception:
         kgo_alarm_cfg = None
 
-    logger.debug("R")
     euro_bit_idx = io_to_reg_map.get(euro_alarm_cfg, 23)
     kgo_bit_idx = io_to_reg_map.get(kgo_alarm_cfg, None) if kgo_alarm_cfg is not None else None
 
