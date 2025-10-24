@@ -288,9 +288,10 @@ class Main:
                         logger.error(f"{reg_id}: Не удалось загрузить видео интереса в {interest_name}.")
                 if all_done_ok:
                     if settings.config.getboolean("QT_RM", "enable_recognition"):
-                        logger.info(f"{reg_id}: {interest_name} Отдаем команду на распознавание")
-                        rec_result = await self.qt_rm_client.recognize_webdav(interest_name=interest_name)
-                        logger.info(f"{reg_id}: {interest_name} Результат распознавания: {rec_result}")
+                        logger.info(f"{reg_id}: {interest_name} Отдаем команду на распознавание (выстерлил и забыл)")
+                        asyncio.create_task(
+                            self.qt_rm_client.recognize_webdav(interest_name=interest_name)
+                        )
                     total_src_removed = 0
                     for ch, info in channels_info.items():
                         sources = (info or {}).get("concat_sources") or []
