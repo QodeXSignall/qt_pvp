@@ -32,9 +32,14 @@ config.read(CONFIG_PATH, encoding="utf-8")
 
 cms_host = f"{config.get('CMS', 'schema')}{config.get('CMS', 'ip')}:" \
            f"{config.getint('CMS', 'port')}"
-
 cms_login = os.environ.get("cms_login")
 cms_password = os.environ.get("cms_password")
+
+qt_rm_url = (f"{config.get('QT_RM', 'schema')}{config.get('QT_RM', 'host')}:"
+             f"{config.get('QT_RM', 'port')}")
+qt_rm_login = os.environ.get("qt_rm_login")
+qt_rm_password = os.environ.get("qt_rm_password")
+
 TIME_FMT = "%Y-%m-%d %H:%M:%S"
 
 

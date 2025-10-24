@@ -1,5 +1,6 @@
 from qt_pvp.interest_merge_funcs import merge_overlapping_interests
 from qt_pvp.cms_interface import functions as cms_api_funcs
+from qt_pvp.qt_rm_client import QTRMAsyncClient
 from qt_pvp import functions as main_funcs
 from qt_pvp.cms_interface import cms_http
 from qt_pvp.cms_interface import cms_api
@@ -26,6 +27,9 @@ class Main:
         self._per_device_sem = {}
         self._devices_sem = asyncio.Semaphore(settings.config.getint("Process", "MAX_DEVICES_CONCURRENT"))
         self.ignore_points = geo_funcs.get_ignore_points()
+        self.qt_rm_client = QTRMAsyncClient(base_url=settings.qt_rm_url,
+                                            username=settings.qt_rm_login,
+                                            password=settings.qt_rm_password)
 
     def _get_device_sem(self, reg_id):
         sem = self._per_device_sem.get(reg_id)
@@ -283,6 +287,10 @@ class Main:
                     else:
                         logger.error(f"{reg_id}: Не удалось загрузить видео интереса в {interest_name}.")
                 if all_done_ok:
+                    if settings.config.getboolean("QT_RM", "enable_recognition"):
+                        logger.info(f"{reg_id}: {interest_name} Отдаем команду на распознавание")
+                        rec_result = await self.qt_rm_client.recognize_webdav(interest_name=interest_name)
+                        logger.info(f"{reg_id}: {interest_name} Результат распознавания: {rec_result}")
                     total_src_removed = 0
                     for ch, info in channels_info.items():
                         sources = (info or {}).get("concat_sources") or []
