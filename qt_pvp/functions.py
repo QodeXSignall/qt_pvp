@@ -94,20 +94,26 @@ def concatenate_videos(converted_files, output_abs_name, reg_id, interest_name):
         return
 
     # --- Сортировка по времени начала в имени файла ---
-    # ищем шаблон -HHMMSS- в имени (например, -093433-)
-    def extract_time_key(path):
+    # Формат у тебя ...-ДДММГГ- HHMMSS - HHMMSS -....
+    def extract_time_key(path: str):
         base = os.path.basename(path)
-        m = re.search(r'-(\d{6})-', base)
-        if m:
-            return m.group(1)
-        return base  # fallback, если не нашли — оставляем как есть
+        parts = re.findall(r'-(\d{6})-', base)
+        if len(parts) >= 3:
+            date, start, end = parts[0], parts[1], parts[2]
+            # tie-breaker: basename чтобы порядок был детерминированным при равных временах
+            return (int(date), int(start), int(end), base)
+        elif len(parts) >= 2:
+            return (int(parts[0]), int(parts[1]), -1, base)
+        elif len(parts) == 1:
+            return (int(parts[0]), -1, -1, base)
+        return (float('inf'), float('inf'), float('inf'), base)
 
+    # Сначала очищаем от пустых, потом сортируем
+    converted_files = [f for f in converted_files if f]
     converted_files = sorted(converted_files, key=extract_time_key)
 
     # --- Фильтрация существующих и непустых файлов ---
     for f in converted_files:
-        if not f:
-            continue
         try:
             if os.path.isfile(f) and os.path.getsize(f) > 0:
                 concat_candidates.append(f)
@@ -119,23 +125,27 @@ def concatenate_videos(converted_files, output_abs_name, reg_id, interest_name):
     if len(concat_candidates) == 0:
         raise FileNotFoundError(f"{reg_id}: {interest_name} [CONCAT] Нет ни одного валидного входного файла — пропускаю интерес.")
 
+    # Перестрахуемся: создадим каталог для выходного файла и списка конкатенации
+    out_dir = os.path.dirname(output_abs_name)
+    os.makedirs(out_dir, exist_ok=True)
+
     if len(concat_candidates) == 1:
         src = concat_candidates[0]
-        os.makedirs(os.path.dirname(output_abs_name), exist_ok=True)
         shutil.copyfile(src, output_abs_name)
         logger.debug(f"{reg_id}: {interest_name} [CONCAT] Единственный файл — скопирован: {src} -> {output_abs_name}")
         return
 
-    concat_list_path = os.path.join(
-        os.path.dirname(output_abs_name),
-        f"concat_list_{uuid.uuid4().hex}.txt"
-    )
+    # Лог ключей именно по итоговым кандидатам
+    logger.debug(f"{reg_id}: {interest_name} [CONCAT] Ключи: {[(os.path.basename(f), extract_time_key(f)) for f in concat_candidates]}")
     logger.debug(f"{reg_id}: {interest_name} [CONCAT] Конкатенация файлов {concat_candidates}")
 
+    # Готовим список для ffmpeg concat (нормализуем слэши и экранируем одиночные кавычки)
+    concat_list_path = os.path.join(out_dir, f"concat_list_{uuid.uuid4().hex}.txt")
     try:
-        with open(concat_list_path, "w", encoding="utf-8") as f:
+        with open(concat_list_path, "w", encoding="utf-8", newline="\n") as f:
             for file in concat_candidates:
-                f.write(f"file '{file}'\n")
+                norm = file.replace("\\", "/").replace("'", r"\'")
+                f.write(f"file '{norm}'\n")
 
         cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
                "-i", concat_list_path, "-c", "copy", output_abs_name]
@@ -151,6 +161,7 @@ def concatenate_videos(converted_files, output_abs_name, reg_id, interest_name):
             os.remove(concat_list_path)
         except OSError:
             pass
+
 
 
 def convert_video_file(input_video_path: str, output_dir: str = None,
