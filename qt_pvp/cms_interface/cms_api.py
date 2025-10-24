@@ -389,11 +389,13 @@ async def wait_and_get_dwn_url(jsession, download_task_url, reg_id, poll_interva
         dph = old.get("dph")
 
         if result == 11 and dph:
-            logger.info(f"{reg_id}:{interest_name} ch{channel_id} . Загрузка видео завершена!")
+            logger.info(f"{reg_id}:{interest_name} ch{channel_id}. Загрузка видео завершена!")
             logger.debug(f"Get path: {dph}")
+            if not os.path.exists(dph):
+                logger.error(f"{reg_id}:{interest_name} ch{channel_id}. При этом фактически файла нет на диске! ({response_json})")
             return dph
         if result == 32:
-            logger.warning(f"{reg_id}:{interest_name} ch{channel_id} . Устройство отключено! 32")
+            logger.warning(f"{reg_id}:{interest_name} ch{channel_id}. Устройство отключено! 32")
             raise DeviceOfflineError
 
         count += 1
