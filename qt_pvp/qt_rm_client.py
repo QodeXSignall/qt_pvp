@@ -45,6 +45,7 @@ class QTRMAsyncClient:
         tokens_path: Optional[Union[str, Path]] = None,
         timeout: float = 600.0,
         client: Optional[httpx.AsyncClient] = None,
+        concurrent_requests: int = 16,
     ) -> None:
         if not base_url or not username or not password:
             raise ValueError("base_url, username, password are required")
@@ -64,6 +65,9 @@ class QTRMAsyncClient:
         self.tokens_path = Path(tokens_path) if tokens_path else None
         if self.tokens_path:
             self._load_tokens_file()
+
+        # Лимит параллельных запросов к QTRM
+        self._sem = asyncio.Semaphore(concurrent_requests)
 
         # Блокировка на refresh/login
         self._lock = asyncio.Lock()
@@ -237,122 +241,133 @@ class QTRMAsyncClient:
             raise QTRMClientError(f"set_current_model failed: {resp.status_code} {resp.text}")
         return resp.json()
 
-    # ---- tools: recognize (файл)
     async def recognize(
-        self,
-        video_path: Union[str, Path],
-        *,
-        model_id: Optional[str] = None,
-        device: Optional[str] = None,
-        target_fps: Optional[float] = None,
-        stride: Optional[int] = None,
-        imgsz: Optional[int] = None,
-        batch: Optional[int] = None,
-        smooth_window: Optional[int] = None,
-        min_sec_by_label: Optional[str] = None,
-        max_noise_gap_sec: Optional[float] = None,
-        free_labels: Optional[str] = None,
-        no_normalize_labels: bool = False,
-        finalize_free_sec: Optional[float] = None,
+            self,
+            video_path: Union[str, Path],
+            *,
+            model_id: Optional[str] = None,
+            device: Optional[str] = None,
+            target_fps: Optional[float] = None,
+            stride: Optional[int] = None,
+            imgsz: Optional[int] = None,
+            batch: Optional[int] = None,
+            smooth_window: Optional[int] = None,
+            min_sec_by_label: Optional[str] = None,
+            max_noise_gap_sec: Optional[float] = None,
+            free_labels: Optional[str] = None,
+            no_normalize_labels: bool = False,
+            finalize_free_sec: Optional[float] = None,
     ) -> Dict[str, Any]:
-        files = {}
-        vp = Path(video_path)
-        files["video_file"] = (vp.name or "video.mp4", vp.open("rb"))
-        data: Dict[str, Any] = {}
-        if model_id is not None:
-            data["model_id"] = model_id
-        if device is not None:
-            data["device"] = device
-        if target_fps is not None:
-            data["target_fps"] = str(target_fps)
-        if stride is not None:
-            data["stride"] = str(stride)
-        if imgsz is not None:
-            data["imgsz"] = str(imgsz)
-        if batch is not None:
-            data["batch"] = str(batch)
-        if smooth_window is not None:
-            data["smooth_window"] = str(smooth_window)
-        if min_sec_by_label is not None:
-            data["min_sec_by_label"] = min_sec_by_label
-        if max_noise_gap_sec is not None:
-            data["max_noise_gap_sec"] = str(max_noise_gap_sec)
-        if free_labels is not None:
-            data["free_labels"] = free_labels
-        if no_normalize_labels:
-            data["no_normalize_labels"] = "true"
-        if finalize_free_sec is not None:
-            data["finalize_free_sec"] = str(finalize_free_sec)
+        """
+        Загружает локальный видеофайл на QTRM /tools/recognize.
+        Обёрнуто в семафор self._sem — ограничение параллельности.
+        """
+        async with self._sem:
+            files: Dict[str, Any] = {}
+            vp = Path(video_path)
+            files["video_file"] = (vp.name or "video.mp4", vp.open("rb"))
 
-        try:
-            resp = await self._request("POST", "/tools/recognize", files=files, data=data)
-        finally:
+            data: Dict[str, Any] = {}
+            if model_id is not None:
+                data["model_id"] = model_id
+            if device is not None:
+                data["device"] = device
+            if target_fps is not None:
+                data["target_fps"] = str(target_fps)
+            if stride is not None:
+                data["stride"] = str(stride)
+            if imgsz is not None:
+                data["imgsz"] = str(imgsz)
+            if batch is not None:
+                data["batch"] = str(batch)
+            if smooth_window is not None:
+                data["smooth_window"] = str(smooth_window)
+            if min_sec_by_label is not None:
+                data["min_sec_by_label"] = min_sec_by_label
+            if max_noise_gap_sec is not None:
+                data["max_noise_gap_sec"] = str(max_noise_gap_sec)
+            if free_labels is not None:
+                data["free_labels"] = free_labels
+            if no_normalize_labels:
+                data["no_normalize_labels"] = "true"
+            if finalize_free_sec is not None:
+                data["finalize_free_sec"] = str(finalize_free_sec)
+
             try:
-                files["video_file"][1].close()
-            except Exception:
-                pass
+                resp = await self._request("POST", "/tools/recognize", files=files, data=data)
+            finally:
+                try:
+                    files["video_file"][1].close()
+                except Exception:
+                    pass
 
-        if resp.status_code != 200:
-            raise QTRMClientError(f"recognize failed: {resp.status_code} {resp.text}")
-        return resp.json()
+            if resp.status_code != 200:
+                raise QTRMClientError(f"recognize failed: {resp.status_code} {resp.text}")
+            return resp.json()
 
-    # ---- tools: recognize_webdav (interest_name)
     async def recognize_webdav(
-        self,
-        interest_name: str,
-        *,
-        model_id: Optional[str] = None,
-        device: Optional[str] = None,
-        target_fps: Optional[float] = None,
-        stride: Optional[int] = None,
-        imgsz: Optional[int] = None,
-        batch: Optional[int] = None,
-        smooth_window: Optional[int] = None,
-        min_sec_by_label: Optional[str] = None,
-        max_noise_gap_sec: Optional[float] = None,
-        free_labels: Optional[str] = None,
-        no_normalize_labels: bool = False,
-        finalize_free_sec: Optional[float] = None,
-        webdav_root: Optional[str] = None,
+            self,
+            interest_name: str,
+            *,
+            model_id: Optional[str] = None,
+            device: Optional[str] = None,
+            target_fps: Optional[float] = None,
+            stride: Optional[int] = None,
+            imgsz: Optional[int] = None,
+            batch: Optional[int] = None,
+            smooth_window: Optional[int] = None,
+            min_sec_by_label: Optional[str] = None,
+            max_noise_gap_sec: Optional[float] = None,
+            free_labels: Optional[str] = None,
+            no_normalize_labels: bool = False,
+            finalize_free_sec: Optional[float] = None,
+            webdav_root: Optional[str] = None,
     ) -> Dict[str, Any]:
-        # Сервер ждёт параметры в query-строке
-        params: Dict[str, Any] = {"interest_name": interest_name}
-        if model_id is not None:
-            params["model_id"] = model_id
-        if device is not None:
-            params["device"] = device
-        if target_fps is not None:
-            params["target_fps"] = str(target_fps)
-        if stride is not None:
-            params["stride"] = str(stride)
-        if imgsz is not None:
-            params["imgsz"] = str(imgsz)
-        if batch is not None:
-            params["batch"] = str(batch)
-        if smooth_window is not None:
-            params["smooth_window"] = str(smooth_window)
-        if min_sec_by_label is not None:
-            params["min_sec_by_label"] = min_sec_by_label
-        if max_noise_gap_sec is not None:
-            params["max_noise_gap_sec"] = str(max_noise_gap_sec)
-        if free_labels is not None:
-            params["free_labels"] = free_labels
-        if no_normalize_labels:
-            params["no_normalize_labels"] = "true"
-        if finalize_free_sec is not None:
-            params["finalize_free_sec"] = str(finalize_free_sec)
-        if webdav_root is not None:
-            params["webdav_root"] = webdav_root
+        """
+        Стартует задачу на QTRM /tasks/recognize_webdav_task по имени интереса.
+        Обёрнуто в семафор self._sem — ограничение параллельности.
+        """
+        async with self._sem:
+            params: Dict[str, Any] = {"interest_name": interest_name}
+            if model_id is not None:
+                params["model_id"] = model_id
+            if device is not None:
+                params["device"] = device
+            if target_fps is not None:
+                params["target_fps"] = str(target_fps)
+            if stride is not None:
+                params["stride"] = str(stride)
+            if imgsz is not None:
+                params["imgsz"] = str(imgsz)
+            if batch is not None:
+                params["batch"] = str(batch)
+            if smooth_window is not None:
+                params["smooth_window"] = str(smooth_window)
+            if min_sec_by_label is not None:
+                params["min_sec_by_label"] = min_sec_by_label
+            if max_noise_gap_sec is not None:
+                params["max_noise_gap_sec"] = str(max_noise_gap_sec)
+            if free_labels is not None:
+                params["free_labels"] = free_labels
+            if no_normalize_labels:
+                params["no_normalize_labels"] = "true"
+            if finalize_free_sec is not None:
+                params["finalize_free_sec"] = str(finalize_free_sec)
+            if webdav_root is not None:
+                params["webdav_root"] = webdav_root
 
-        resp = await self._request("POST", "/tasks/recognize_webdav_task", params=params)
-        if resp.status_code != 200:
-            # fallback: вдруг сервер ожидает form-данные
+            # Основной вариант — query-параметры
+            resp = await self._request("POST", "/tasks/recognize_webdav_task", params=params)
+            if resp.status_code == 200:
+                return resp.json()
+
+            # Fallback на form-data, если сервер так ожидает (422)
             if resp.status_code == 422:
                 resp2 = await self._request("POST", "/tasks/recognize_webdav_task", data=params)
                 if resp2.status_code == 200:
                     return resp2.json()
+
             raise QTRMClientError(f"recognize_webdav failed: {resp.status_code} {resp.text}")
-        return resp.json()
 
     # ---- helpers
     async def force_login(self) -> None:

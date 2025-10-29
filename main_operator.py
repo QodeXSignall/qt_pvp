@@ -27,9 +27,11 @@ class Main:
         self._devices_sem = asyncio.Semaphore(settings.config.getint("Process", "MAX_DEVICES_CONCURRENT"))
         self.ignore_points = geo_funcs.get_ignore_points()
         self._interest_refill_in_progress = set()
-        self.qt_rm_client = QTRMAsyncClient(base_url=settings.qt_rm_url,
-                                            username=settings.qt_rm_login,
-                                            password=settings.qt_rm_password)
+        self.qt_rm_client = QTRMAsyncClient(
+            base_url=settings.qt_rm_url,
+            username=settings.qt_rm_login,
+            password=settings.qt_rm_password,
+            concurrent_requests=settings.config.getint("QT_RM", "CONCURRENT_REQUESTS", fallback=16),)
 
     def _get_device_sem(self, reg_id):
         sem = self._per_device_sem.get(reg_id)
