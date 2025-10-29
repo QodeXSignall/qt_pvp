@@ -299,20 +299,9 @@ def create_new_reg(reg_id, plate):
         return json.loads(json.dumps(regs[reg_id]))
 
 
-
-def get_reg_last_upload_time(reg_id):
-    reg_info = get_reg_info(reg_id=reg_id)
-    if not reg_info:
-        reg_info = create_new_reg(reg_id)
-    if not reg_info or "last_upload_time" not in reg_info.keys():
-        return
-    return reg_info["last_upload_time"]
-
-
 def save_new_reg_last_upload_time(reg_id: str, timestamp: str):
-    TIME_FMT = "%Y-%m-%d %H:%M:%S"
     try:
-        new_dt = datetime.datetime.strptime(timestamp, TIME_FMT)
+        new_dt = datetime.datetime.strptime(timestamp, settings.TIME_FMT)
     except Exception:
         logger.warning(f"{reg_id}. Некорректный формат last_upload_time: {timestamp} — игнор.")
         return
@@ -327,7 +316,7 @@ def save_new_reg_last_upload_time(reg_id: str, timestamp: str):
         cur_dt = None
         if cur_str:
             try:
-                cur_dt = datetime.datetime.strptime(cur_str, TIME_FMT)
+                cur_dt = datetime.datetime.strptime(cur_str, settings.TIME_FMT)
             except Exception:
                 pass
 
@@ -598,3 +587,148 @@ def remove_pending_interest(reg_id: str, interest_name: str) -> None:
         cur = reg.get("pending_interests", [])
         reg["pending_interests"] = [it for it in cur if it.get("name") != interest_name]
         _atomic_save_states(states)
+
+from datetime import datetime, timedelta
+from typing import Iterable, Iterator, Tuple, Dict, Any, Optional
+
+
+def _dt(x: str | datetime) -> datetime:
+    return x if isinstance(x, datetime) else datetime.strptime(x, settings.TIME_FMT)
+
+def _fmt(x: datetime) -> str:
+    return x.strftime(settings.TIME_FMT)
+
+
+def stitch_initial_short_gap_and_decide_fallback(
+    *,
+    switch_time: str | datetime,
+    tracks: Iterable[Dict[str, Any]],
+    # имена полей времени в треках
+    begin_key: str = "beginTime",
+    end_key: str = "endTime",
+    # пороги
+    early_window_s: int = 10,       # «мы ещё не ушли дальше 10 секунд»
+    short_gap_s: int = 60,          # «короткий разрыв» ≤ 60 сек
+    fallback_shift_s: int = 60,     # fallback: switch_time - 60 сек
+    logger=None,
+) -> Tuple[datetime, bool, Iterator[Tuple[datetime, datetime, Dict[str, Any]]]]:
+    """
+    Возвращает:
+      - effective_start: datetime — какое время считать началом для анализа (возможно, switch_time - 60с при фолбэке)
+      - fallback_used: bool — был ли применён fallback
+      - segments_iter: Iterator[(seg_start, seg_end, raw_track)] — итератор по сегментам для дальнейшей обработки
+        (в начале «короткий» разрыв будет сшит логически, т.е. мы просто продолжим после разрыва, не останавливаясь)
+
+    ЛОГИКА:
+      - Ищем трек, накрывающий switch_time, либо ближайший следующий.
+      - Идём вперёд, отслеживаем первый разрыв между соседними треками.
+      - Если разрыв встретился, а покрытие от switch_time ещё < early_window_s:
+          - gap <= short_gap_s   -> шьём: игнорируем разрыв и продолжаем (segments_iter просто продолжится)
+          - gap > short_gap_s    -> fallback: вернуть (switch_time - fallback_shift_s, True, ...)
+      - Если разрыв впервые встретился ПОСЛЕ того, как покрытие от switch_time превысило early_window_s,
+        то работаем как обычно (ничего не шьём и не делаем fallback).
+    """
+    sw = _dt(switch_time)
+    # Отсортируем треки по началу
+    tracks_sorted = sorted(
+        tracks,
+        key=lambda t: _dt(t[begin_key])
+    )
+
+    # Соберём список (start,end,raw)
+    segs: list[Tuple[datetime, datetime, Dict[str, Any]]] = []
+    for t in tracks_sorted:
+        try:
+            b = _dt(t[begin_key])
+            e = _dt(t[end_key])
+        except Exception:
+            # пропускаем битые
+            continue
+        if e <= b:
+            continue
+        segs.append((b, e, t))
+
+    # Найдём первый сегмент, который либо перекрывает switch_time, либо начинается после него
+    start_idx: Optional[int] = None
+    for i, (b, e, _) in enumerate(segs):
+        if e >= sw:
+            start_idx = i
+            break
+    if start_idx is None:
+        # нет сегментов после switch_time — fallback сразу
+        if logger:
+            logger.warning("[INTEREST] Нет треков после switch_time=%s -> fallback to switch_time-60s", _fmt(sw))
+        return sw - timedelta(seconds=fallback_shift_s), True, iter([])
+
+    # Будем итерироваться, измеряя "накрытое" покрытие от sw
+    covered_since_sw = 0.0
+    fallback_used = False
+    effective_start = sw
+
+    # Ленивая генерация сегментов (причём «короткий» разрыв в начале просто игнорируем)
+    def _iter_segments() -> Iterator[Tuple[datetime, datetime, Dict[str, Any]]]:
+        nonlocal covered_since_sw, fallback_used, effective_start
+
+        prev_end: Optional[datetime] = None
+        first_segment_seen = False
+
+        for j in range(start_idx, len(segs)):
+            b, e, raw = segs[j]
+
+            # Если первый сегмент начинается ДО switch_time — обрежем его слева
+            if not first_segment_seen:
+                first_segment_seen = True
+                if e <= sw:
+                    # теоретически не должно случиться из-за выбора start_idx, но оставим защиту
+                    continue
+                if b < sw:
+                    # начинаем со switch_time
+                    b_eff = sw
+                else:
+                    b_eff = b
+                prev_end = b_eff  # для корректного вычисления gap на следующем шаге
+                # Выдадим (b_eff, e) как первый сегмент
+                yield (b_eff, e, raw)
+                covered_since_sw += (e - b_eff).total_seconds()
+                prev_end = e
+                continue
+
+            # Для остальных сегментов: проверяем разрыв от prev_end до b
+            if prev_end is None:
+                prev_end = b
+
+            gap = (b - prev_end).total_seconds()
+
+            if gap > 0:
+                # Разрыв обнаружен
+                if covered_since_sw < early_window_s:
+                    # мы ещё не ушли дальше 10 секунд от switch_time
+                    if gap <= short_gap_s:
+                        # короткий разрыв — игнорируем, просто продолжаем
+                        if logger:
+                            logger.debug(
+                                "[INTEREST] Короткий разрыв=%.1fs (<=%ds) в самые ранние %.1fs после switch_time — пропускаем и продолжаем.",
+                                gap, short_gap_s, covered_since_sw
+                            )
+                        # логически «шьём» — ничего не yield-им, просто продолжаем как непрерывный поток
+                        # это реализуется тем, что мы НИЧЕГО не изменяем, просто считаем b как prev_end (переход)
+                        # фактически следующий сегмент начнётся с b, а prev_end был e предыдущего — «дырка» проигнорирована
+                    else:
+                        # длинный разрыв — fallback
+                        fallback_used = True
+                        effective_start = sw - timedelta(seconds=fallback_shift_s)
+                        if logger:
+                            logger.warning(
+                                "[INTEREST] Длинный разрыв=%.1fs (>%ds) в первые %.1fs после switch_time — Fallback: start=%s",
+                                gap, short_gap_s, covered_since_sw, _fmt(effective_start)
+                            )
+                        # Можно завершить генерацию — вызывающая сторона пересчитает логику с новым start
+                        return
+                # Если мы уже «ушли» дальше early_window_s — работаем как обычно, разрыв допустим
+
+            # отдаем сегмент как есть
+            yield (b, e, raw)
+            covered_since_sw += (e - b).total_seconds()
+            prev_end = e
+
+    return effective_start, fallback_used, _iter_segments()

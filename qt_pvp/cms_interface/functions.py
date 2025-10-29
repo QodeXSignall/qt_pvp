@@ -586,7 +586,7 @@ def find_interests_by_lifting_switches(
         euro_on = bits[euro_bit_idx] == '1'
         kgo_on = (kgo_bit_idx is not None) and (bits[kgo_bit_idx] == '1')
         if euro_on or kgo_on:
-            cargo_type = "Евро-контейнер" if kgo_on else "Бункер"
+            cargo_type = "Бункер" if kgo_on else "Контейнер"
             logger.info(f"{reg_id}: [SWITCH] Срабатывание концевика в {timestamp}, EuroIO(bit {euro_bit_idx})={bits[euro_bit_idx]}" + (f", KGOIO(bit {kgo_bit_idx})={bits[kgo_bit_idx]}" if kgo_bit_idx is not None else ""))
 
             if int(track.get("sp") or 0) > min_speed_for_switch_detect:

@@ -344,11 +344,11 @@ class QTRMAsyncClient:
         if webdav_root is not None:
             params["webdav_root"] = webdav_root
 
-        resp = await self._request("POST", "/tools/recognize_webdav", params=params)
+        resp = await self._request("POST", "/tasks/recognize_webdav_task", params=params)
         if resp.status_code != 200:
             # fallback: вдруг сервер ожидает form-данные
             if resp.status_code == 422:
-                resp2 = await self._request("POST", "/tools/recognize_webdav", data=params)
+                resp2 = await self._request("POST", "/tasks/recognize_webdav_task", data=params)
                 if resp2.status_code == 200:
                     return resp2.json()
             raise QTRMClientError(f"recognize_webdav failed: {resp.status_code} {resp.text}")
@@ -375,6 +375,6 @@ async def main():
     ) as cli:
         print(await cli.health())
         res = await cli.recognize_webdav("K630AX702_2025.10.24 11.52.13-11.55.21")
-        print(res["counts"])
+        print(res)
 
 #asyncio.run(main())

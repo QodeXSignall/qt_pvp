@@ -91,6 +91,7 @@ class Main:
                 min_stop_speed_kmh=settings.config.getint("Interests", "MIN_STOP_SPEED") / 10.0,
                 merge_gap_sec=15
             )
+            print(prepared)
             try:
                 interests = cms_api_funcs.find_interests_by_lifting_switches(
                     tracks=tracks,
