@@ -1,6 +1,7 @@
 from qt_pvp.logger import logger
 from qt_pvp.data import settings
 from qt_pvp.filelocker import FileLock, _load_states, _atomic_save_states, LOCK_PATH
+from typing import Iterable, Iterator, Tuple, Dict, Any, Optional
 from typing import List
 import subprocess
 import datetime
@@ -16,7 +17,8 @@ import re
 
 
 def _default_new_reg_info(plate=None):
-    last_upload = datetime.datetime.today() - datetime.timedelta(days=7)
+    last_upload = datetime.today() - datetime.timedelta(days=7)
+    datetime.datetime.today()
     return {
         "ignore": False,
         "interests": [],
@@ -546,9 +548,18 @@ def get_pending_interests(reg_id: str) -> list[dict]:
     with FileLock(LOCK_PATH):
         states = _load_states()
         regs = states.setdefault("regs", {})
-        reg = regs.setdefault(reg_id, _default_new_reg_info())
+
+        reg = regs.get(reg_id)
+        if reg is None:
+            # Жёсткая ситуация: в файле нет такого регистратора.
+            # Мы не создаём дефолт (чтобы не потерять данные молча),
+            # а возвращаем пустой список. Логируем warning.
+            logger.warning(f"{reg_id}: get_pending_interests -> регистратор не найден в states.json")
+            return []
+
         ensure_alarms_structure_inplace(regs, reg_id)
         return list(reg.get("pending_interests", []))
+
 
 def set_pending_interests(reg_id: str, interests: list[dict]) -> None:
     with FileLock(LOCK_PATH):
@@ -588,16 +599,13 @@ def remove_pending_interest(reg_id: str, interest_name: str) -> None:
         reg["pending_interests"] = [it for it in cur if it.get("name") != interest_name]
         _atomic_save_states(states)
 
-from datetime import datetime, timedelta
-from typing import Iterable, Iterator, Tuple, Dict, Any, Optional
 
 
 def _dt(x: str | datetime) -> datetime:
-    return x if isinstance(x, datetime) else datetime.strptime(x, settings.TIME_FMT)
+    return x if isinstance(x, datetime.datetime) else datetime.datetime.strptime(x, settings.TIME_FMT)
 
 def _fmt(x: datetime) -> str:
     return x.strftime(settings.TIME_FMT)
-
 
 def stitch_initial_short_gap_and_decide_fallback(
     *,
@@ -658,7 +666,7 @@ def stitch_initial_short_gap_and_decide_fallback(
         # нет сегментов после switch_time — fallback сразу
         if logger:
             logger.warning("[INTEREST] Нет треков после switch_time=%s -> fallback to switch_time-60s", _fmt(sw))
-        return sw - timedelta(seconds=fallback_shift_s), True, iter([])
+        return sw - datetime.timedelta(seconds=fallback_shift_s), True, iter([])
 
     # Будем итерироваться, измеряя "накрытое" покрытие от sw
     covered_since_sw = 0.0
@@ -716,7 +724,7 @@ def stitch_initial_short_gap_and_decide_fallback(
                     else:
                         # длинный разрыв — fallback
                         fallback_used = True
-                        effective_start = sw - timedelta(seconds=fallback_shift_s)
+                        effective_start = sw - datetime.timedelta(seconds=fallback_shift_s)
                         if logger:
                             logger.warning(
                                 "[INTEREST] Длинный разрыв=%.1fs (>%ds) в первые %.1fs после switch_time — Fallback: start=%s",
