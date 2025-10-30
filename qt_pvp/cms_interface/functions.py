@@ -721,7 +721,10 @@ def find_interests_by_lifting_switches(
                 i = lifting_end_idx + 1
                 continue
 
-            before_adjust_secs = settings.config.getint("Interests", "INTEREST_BEFORE_SHIFT_SEC")
+            before_adjust_secs = settings.config.getint("Interests", "INTEREST_EURO_BEFORE_SHIFT_SEC")
+            if kgo_on:
+                before_adjust_secs = settings.config.getint("Interests", "INTEREST_KGO_BEFORE_SHIFT_SEC")
+
             if before_adjust_secs:
                 logger.debug(f"{reg_id}: Двигаем время начала интереса на {before_adjust_secs}с")
                 raw_time_before = datetime.datetime.strptime(time_before, settings.TIME_FMT)
