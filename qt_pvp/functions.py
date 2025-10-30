@@ -17,7 +17,7 @@ import re
 
 
 def _default_new_reg_info(plate=None):
-    last_upload = datetime.today() - datetime.timedelta(days=7)
+    last_upload = datetime.datetime.today() - datetime.timedelta(days=7)
     datetime.datetime.today()
     return {
         "ignore": False,
@@ -601,15 +601,15 @@ def remove_pending_interest(reg_id: str, interest_name: str) -> None:
 
 
 
-def _dt(x: str | datetime) -> datetime:
+def _dt(x: str | datetime.datetime) -> datetime:
     return x if isinstance(x, datetime.datetime) else datetime.datetime.strptime(x, settings.TIME_FMT)
 
-def _fmt(x: datetime) -> str:
+def _fmt(x: datetime.datetime) -> str:
     return x.strftime(settings.TIME_FMT)
 
 def stitch_initial_short_gap_and_decide_fallback(
     *,
-    switch_time: str | datetime,
+    switch_time: str | datetime.datetime,
     tracks: Iterable[Dict[str, Any]],
     # имена полей времени в треках
     begin_key: str = "beginTime",
@@ -619,7 +619,7 @@ def stitch_initial_short_gap_and_decide_fallback(
     short_gap_s: int = 60,          # «короткий разрыв» ≤ 60 сек
     fallback_shift_s: int = 60,     # fallback: switch_time - 60 сек
     logger=None,
-) -> Tuple[datetime, bool, Iterator[Tuple[datetime, datetime, Dict[str, Any]]]]:
+) -> Tuple[datetime.datetime, bool, Iterator[Tuple[datetime.datetime, datetime.datetime, Dict[str, Any]]]]:
     """
     Возвращает:
       - effective_start: datetime — какое время считать началом для анализа (возможно, switch_time - 60с при фолбэке)
@@ -644,7 +644,7 @@ def stitch_initial_short_gap_and_decide_fallback(
     )
 
     # Соберём список (start,end,raw)
-    segs: list[Tuple[datetime, datetime, Dict[str, Any]]] = []
+    segs: list[Tuple[datetime.datetime, datetime.datetime, Dict[str, Any]]] = []
     for t in tracks_sorted:
         try:
             b = _dt(t[begin_key])
@@ -674,7 +674,7 @@ def stitch_initial_short_gap_and_decide_fallback(
     effective_start = sw
 
     # Ленивая генерация сегментов (причём «короткий» разрыв в начале просто игнорируем)
-    def _iter_segments() -> Iterator[Tuple[datetime, datetime, Dict[str, Any]]]:
+    def _iter_segments() -> Iterator[Tuple[datetime.datetime, datetime.datetime, Dict[str, Any]]]:
         nonlocal covered_since_sw, fallback_used, effective_start
 
         prev_end: Optional[datetime] = None
