@@ -490,7 +490,7 @@ def find_interests_by_lifting_switches(
                 cargo_key = a.get("cargo_type", "unknown")
                 if cargo_key == "unknown":
                     continue
-                cargo_type_alarm = "КГО" if cargo_key == "kgo" else "Контейнер"
+                cargo_type_alarm = "Бункер" if cargo_key == "kgo" else "Контейнер"
 
                 delta_last_track_to_alarm_seconds =  (alarm_dt - t_curr).total_seconds()
                 delta_alarm_to_first_track_seconds = (t_next - alarm_dt).total_seconds()
@@ -551,16 +551,17 @@ def find_interests_by_lifting_switches(
 
                 # «окно интереса» для выгрузки (как у тебя ниже: end_time — это time_30_after)
                 time_30_after = (alarm_dt + datetime.timedelta(seconds=sec_after)).strftime("%Y-%m-%d %H:%M:%S")
+                end_time = min(time_after_adj, time_30_after)
 
                 interval = get_interest_from_track(
                     tracks[-1],
                     start_time=time_before,
-                    end_time=time_30_after,
+                    end_time=end_time,
                     photo_before_timestamp=time_before,
                     photo_after_timestamp=time_after_adj,
                 )
                 interval["report"] = {
-                    "cargo_type": cargo_type_alarm,
+                    "cargo_type": cargo_type_alarm,  # уже нормализованный "Контейнер"/"Бункер"
                     "geo": track.get("ps"),
                     "switches_amount": 1,
                     "switch_events": [{
