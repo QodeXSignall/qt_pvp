@@ -548,6 +548,17 @@ async def download_single_clip_per_channel(
     TIME_FMT = "%Y-%m-%d %H:%M:%S"
     dt_start = datetime.datetime.strptime(interest["start_time"], TIME_FMT)
     dt_end   = datetime.datetime.strptime(interest["end_time"],   TIME_FMT)
+    #raw_start = interest["start_time"]
+    #if isinstance(raw_start, datetime.datetime):
+    #    dt_start = raw_start
+    #else:
+    #    dt_start = datetime.datetime.strptime(raw_start, TIME_FMT)
+    #
+    #raw_end = interest["end_time"]
+    #if isinstance(raw_end, datetime.datetime):
+    #    dt_end = raw_end
+    #else:
+    #    dt_end = datetime.datetime.strptime(raw_end, TIME_FMT)
     interest_name = interest["name"]
 
     start_sec = dt_start.hour * 3600 + dt_start.minute * 60 + dt_start.second
