@@ -112,20 +112,53 @@ def _load_states() -> dict:
         return {"regs": {}}
 
 
+def _sanitize_for_json(obj):
+    """
+    Рекурсивно проходит по структуре и превращает всё несерилизуемое в сериализуемое.
+    datetime -> "%Y-%m-%d %H:%M:%S"
+    set -> list
+    остальное оставляем как есть.
+    """
+    import datetime as _dt
+
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+
+    if isinstance(obj, list):
+        return [_sanitize_for_json(v) for v in obj]
+
+    if isinstance(obj, tuple):
+        return tuple(_sanitize_for_json(v) for v in obj)
+
+    if isinstance(obj, set):
+        # множества у нас бывают (io_indices_set в алармах), JSON их не любит
+        return [_sanitize_for_json(v) for v in obj]
+
+    if isinstance(obj, _dt.datetime):
+        # без tzinfo, нам и не надо её тут
+        return obj.strftime("%Y-%m-%d %H:%M:%S")
+
+    # числа, строки, bool, None проходят как есть
+    return obj
+
+
 def _atomic_save_states(states: dict) -> None:
     """
     Атомарная запись JSON:
-      1) пишем во временный файл в той же директории
-      2) fsync
-      3) os.replace -> атомарная подмена целевого файла
+      1) приводим к сериализуемому виду (без datetime)
+      2) пишем во временный файл в той же директории
+      3) fsync
+      4) os.replace -> атомарная подмена целевого файла
     """
     dir_ = os.path.dirname(STATES_PATH) or "."
     os.makedirs(dir_, exist_ok=True)
 
+    safe_states = _sanitize_for_json(states)
+
     fd, tmp_path = tempfile.mkstemp(prefix=".states.", suffix=".tmp", dir=dir_)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as tmp:
-            json.dump(states, tmp, indent=4, ensure_ascii=False)
+            json.dump(safe_states, tmp, indent=4, ensure_ascii=False)
             tmp.flush()
             os.fsync(tmp.fileno())
         os.replace(tmp_path, STATES_PATH)
