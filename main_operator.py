@@ -156,17 +156,25 @@ class Main:
 
         logger.info(f"{reg_id}: Найдено {len(interests)} интересов")
         interests = merge_overlapping_interests(interests)
-        #interests = main_funcs.filter_already_processed(reg_id, interests)
         logger.info(f"{reg_id}: К запуску {len(interests)} интересов (после фильтра processed).")
 
-        # --- NEW: батч по N интересов из конфига ---
+        # сортируем интересы по времени начала, старые сначала
+        def _parse_start_ts(it: dict):
+            try:
+                return datetime.datetime.strptime(it.get("start_time", ""), "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                return datetime.datetime.max  # если испорченный интерес — обрабатываем в самом конце
+
+        interests.sort(key=_parse_start_ts)
+
         total_found = len(interests)
-        # сортируем по началу, чтобы обрабатывать по хронологии и корректно двигать last_upload_time
-        interests = sorted(interests, key=lambda it: it.get("beg_sec", 0))
 
         max_per_batch = settings.config.getint("Process", "MAX_INTERESTS_PER_BATCH", fallback=8)
         if total_found > max_per_batch:
-            logger.info(f"{reg_id}: Берём в работу только {max_per_batch} из {total_found} интересов (батч). Остальные — в следующий цикл.")
+            logger.info(
+                f"{reg_id}: Берём в работу только {max_per_batch} из {total_found} интересов (батч). "
+                f"Остальные — в следующий цикл."
+            )
             interests = interests[:max_per_batch]
         else:
             logger.info(f"{reg_id}: Влезают все интересы ({total_found}) в одну пачку.")
