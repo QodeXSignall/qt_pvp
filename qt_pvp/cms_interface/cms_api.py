@@ -515,9 +515,13 @@ async def download_video(
                     if not url:
                         logger.warning(f"{reg_id}: у файла нет DownTaskUrl: {f}")
                         continue
-                    file_path = await wait_and_get_dwn_url(
-                        jsession=jsession, download_task_url=url, reg_id=reg_id, channel_id=channel_id,
-                        interest_name=interest_name)
+                    try:
+                        file_path = await wait_and_get_dwn_url(
+                            jsession=jsession, download_task_url=url, reg_id=reg_id, channel_id=channel_id,
+                            interest_name=interest_name)
+                    except TimeoutError:
+                        logger.error("Timeout error!")
+                        raise DeviceOfflineError("Timeout error")
                     if file_path:
                         file_paths.append(file_path)
                 return file_paths or None
