@@ -321,10 +321,10 @@ class Main:
                         logger.info(
                             f"{reg_id}: Удаляем временную директорию интереса {interest_name}. ({interest_temp_folder}).")
                         shutil.rmtree(interest_temp_folder)
-                    try:
-                        main_funcs.remove_pending_interest(reg_id, interest_name)
-                    except Exception as e:
-                        logger.warning(f"{reg_id}: Не удалось удалить {interest_name} из pending_interests: {e}")
+                try:
+                    main_funcs.remove_pending_interest(reg_id, interest_name)
+                except Exception as e:
+                    logger.warning(f"{reg_id}: Не удалось удалить {interest_name} из pending_interests: {e}")
 
                 logger.info(f"{reg_id}: V2 завершено. Upload={upload_status}. Удалено видеофайлов: {removed}.")
 
@@ -371,14 +371,6 @@ class Main:
                 if not t.done():
                     t.cancel()
 
-        # Обновляем last_upload_time ОДИН раз — максимумом из завершённых интересов,
-        # либо (если все упали/ничего не пришло) — концом окна end_time
-        #if end_times:
-        #    new_last = max(end_times)
-        #else:
-        #    new_last = end_time  # Повторяем снова, пока не получим данные
-        #main_funcs.save_new_reg_last_upload_time(reg_id, new_last)
-        #main_funcs.save_new_reg_last_upload_time(reg_id, new_last)
         logger.info(f"{reg_id}. Пакет интересов завершён: {len(end_times)}/{len(interests)};")
 
     async def get_channels_to_download_pics(self, interest_cloud_path):
