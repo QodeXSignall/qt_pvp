@@ -81,10 +81,12 @@ class Main:
             alarms_task = asyncio.create_task(cms_api.get_device_alarm_all_pages_async(self.jsession, reg_id, start_time, stop_time))
             tracks, alarm_reports = await asyncio.gather(tracks_task, alarms_task)
             tracks = [t for page in tracks for t in (page.get("tracks") or [])]
-
             all_alarms = []
             for page in alarm_reports:
                 all_alarms.extend(page.get("alarms") or [])
+
+            #for alarm in all_alarms:
+            #    print(alarm)
 
             prepared = cms_api_funcs.prepare_alarms(
                 raw_alarms=all_alarms,
@@ -93,7 +95,6 @@ class Main:
                 min_stop_speed_kmh=settings.config.getint("Interests", "MIN_STOP_SPEED") / 10.0,
                 merge_gap_sec=15
             )
-            print(prepared)
             try:
                 interests = cms_api_funcs.find_interests_by_lifting_switches(
                     tracks=tracks,
@@ -123,27 +124,28 @@ class Main:
                 logger.warning(f"[ANALYZE] Неожиданный формат из find_interests_by_lifting_switches: {type(interests)}")
                 return []
 
-    async def download_reg_videos(self, reg_id, plate, chanel_id: int = None,
-                                  start_time=None, end_time=None,
-                                  by_trigger=False, proc=False,
-                                  split: int = None):
+    def _parse_start_ts(self, it: dict):
+        try:
+            return datetime.datetime.strptime(it.get("start_time", ""), settings.TIME_FMT)
+        except Exception:
+            return datetime.datetime.max  # если испорченный интерес — обрабатываем в самом конце
+
+    async def download_reg_videos(self, reg_id, plate):
         logger.debug(f"{reg_id}. Начинаем работу с устройством.")
-        begin_time = datetime.datetime.now()
 
         # Информация о регистраторе
         reg_info = main_funcs.get_reg_info(reg_id) or main_funcs.create_new_reg(reg_id, plate)
         logger.debug(f"{reg_id}. Информация о регистраторе: {reg_info}.")
-        chanel_id = reg_info.get("chanel_id", 0)  # Если нет ID канала, ставим 0
 
         ignore = reg_info.get("ignore", False)
         if ignore:
             logger.debug(f"{reg_id}. Игнорируем регистратор, поскольку в states.json параметр ignore=true.")
             return
 
+        # Pending - уже извлеченные из CMS и сохраненные в states.json интересы
         pending = main_funcs.get_pending_interests(reg_id)
         if not pending:
-            # пополняем очередь, если пора (антиспам: теперь завязан на last_upload_time)
-            await self._refill_pending_interests_if_due(reg_id)
+            await self._refill_pending_interests_if_due(reg_id)     # Извлечь новые интересы из CMS
             pending = main_funcs.get_pending_interests(reg_id)
 
         if pending:
@@ -159,17 +161,10 @@ class Main:
         logger.info(f"{reg_id}: К запуску {len(interests)} интересов (после фильтра processed).")
 
         # сортируем интересы по времени начала, старые сначала
-        def _parse_start_ts(it: dict):
-            try:
-                return datetime.datetime.strptime(it.get("start_time", ""), "%Y-%m-%d %H:%M:%S")
-            except Exception:
-                return datetime.datetime.max  # если испорченный интерес — обрабатываем в самом конце
-
-        interests.sort(key=_parse_start_ts)
+        interests.sort(key=self._parse_start_ts)
 
         total_found = len(interests)
-
-        max_per_batch = settings.config.getint("Process", "MAX_INTERESTS_PER_BATCH", fallback=8)
+        max_per_batch = settings.config.getint("Interests", "MAX_INTERESTS_PER_BATCH", fallback=8)
         if total_found > max_per_batch:
             logger.info(
                 f"{reg_id}: Берём в работу только {max_per_batch} из {total_found} интересов (батч). "
@@ -179,170 +174,8 @@ class Main:
         else:
             logger.info(f"{reg_id}: Влезают все интересы ({total_found}) в одну пачку.")
 
-
-        async def _process_one_interest(interest: dict) -> str | None:
-            # ограничители: глобально и на устройство
-            async with self._global_interests_sem, self._get_device_sem(reg_id):
-                created_start_time = datetime.datetime.now()
-                interest_name = interest["name"]
-                nearby_point =  geo_funcs.find_nearby_name(interest["report"]["geo"],
-                                              self.ignore_points,
-                                              settings.config.getint("Interests", "IGNORE_POINTS_TOLERANCE"))
-                if nearby_point:
-                    logger.info(f"{reg_id}: Пропускаем интерес {interest_name}, "
-                                f"интерес зафиксирован рядом {interest['report']['geo']} с точкой игнора - {nearby_point}")
-                    return None
-
-                logger.info(f"{reg_id}: Начинаем работу с интересом {interest_name}")
-                logger.debug(f"{interest}")
-
-                # Создаём пути в облаке под интерес
-                cloud_paths = await cloud_uploader.create_interest_folder_path_async(
-                    name=interest_name,
-                    dest=settings.CLOUD_PATH
-                )
-
-                if not cloud_paths:
-                    logger.error(f"{reg_id}: Не удалось создать папки для {interest_name}. Пропускаем интерес.")
-                    return interest["end_time"]
-
-                interest_cloud_folder = cloud_paths["interest_folder_path"]
-                interest["cloud_folder"] = interest_cloud_folder
-                pics_after_folder = posixpath.join(interest_cloud_folder, "after_pics")
-                pics_before_folder = posixpath.join(interest_cloud_folder, "before_pics")
-                interest["pics_before_folder"] = pics_before_folder
-                interest["pics_after_folder"] = pics_after_folder
-                await cloud_uploader.acreate_folder_if_not_exists(cloud_uploader.client, pics_before_folder)
-                await cloud_uploader.acreate_folder_if_not_exists(cloud_uploader.client, pics_after_folder)
-
-                # 1) проверяем наличие полного видео интереса в облаке
-                interest_video_exists = await cloud_uploader.check_if_interest_video_exists(interest_name)
-
-                # 2) какие каналы нужны для кадров
-                before_channels_to_download, after_channels_to_download = await self.get_channels_to_download_pics(
-                    interest_cloud_folder
-                )
-
-                # 3) если видео по интересу в облаке НЕТ — добавляем канал полного ролика
-                to_download_for_full_clip = [chanel_id] if not interest_video_exists else []
-
-                # детерминированное объединение без дублей
-                final_channels_to_download = sorted({
-                    *before_channels_to_download,
-                    *after_channels_to_download,
-                    *to_download_for_full_clip
-                })
-
-                logger.debug(
-                    f"{reg_id}. {interest_name} Нужно скачать видео интереса: {not interest_video_exists}. "
-                    f"Кадры ДО: {before_channels_to_download}. "
-                    f"Кадры ПОСЛЕ: {after_channels_to_download}. "
-                    f"Итого каналы: {final_channels_to_download}"
-                )
-
-                if not final_channels_to_download:
-                    logger.info("Нечего скачивать, все материалы уже есть в облаке.")
-                    return None
-
-                # 4) скачиваем по одному клипу на канал
-                channels_files_dict = await cms_api.download_single_clip_per_channel(
-                    jsession=self.jsession,
-                    reg_id=reg_id,
-                    interest=interest,
-                    channels=final_channels_to_download
-                )
-                # оставляем полную структуру для доступа к concat_sources при отладке
-                channels_info = channels_files_dict
-
-                channels_paths = {ch: info["path"] for ch, info in channels_info.items() if info and info.get("path")}
-                # 5) если надо — выгружаем «полный» клип в облако (только для chanel_id)
-                full_clip_upload_status = False
-                full_clip_path = None
-                if not interest_video_exists:
-                    file_dict = channels_files_dict.get(chanel_id)
-                    full_clip_path = file_dict["path"]
-                    if full_clip_path:
-                         full_clip_upload_status = await self.upload_interest_video_cloud(
-                            reg_id=reg_id,
-                            interest_name=interest_name,
-                            video_path=full_clip_path,
-                            cloud_folder=cloud_paths["interest_folder_path"]
-                        )
-                    else:
-                        logger.warning(
-                            f"{reg_id}: Полный клип по каналу {chanel_id} не получен — пропускаем загрузку видео.")
-
-                await cloud_uploader.aupload_dict_as_json_to_cloud(
-                    data=interest["report"],
-                    remote_folder_path=interest["cloud_folder"]
-                )
-
-                # 6) извлекаем кадры из КАЖДОГО скачанного клипа и выгружаем их
-                upload_status = await self.process_frames_before_after(
-                    reg_id, interest, channels_paths  # ← передаём словарь!!!
-                )
-                ok_frames = bool(upload_status and upload_status.get("upload_status"))
-                logger.info(f"Результат загрузки изображений: {ok_frames}")
-
-                # 7) чистим локальные клипы (кроме «полного» по нужному каналу)
-                removed = cms_api.delete_videos_except(
-                    videos_by_channel=channels_paths,
-                    keep_channel_id=chanel_id if not interest_video_exists else None
-                )
-                all_done_ok = bool(ok_frames and (interest_video_exists or full_clip_upload_status))
-
-                if full_clip_path:
-                    if full_clip_upload_status:
-                        logger.info(
-                            f"{reg_id}: Удаляем локальное видео интереса {interest_name}. ({full_clip_path}).")
-                        if os.path.exists(full_clip_path):
-                            os.remove(full_clip_path)
-                    else:
-                        logger.error(f"{reg_id}: Не удалось загрузить видео интереса в {interest_name}.")
-                if all_done_ok:
-                    if settings.config.getboolean("QT_RM", "enable_recognition"):
-                        logger.info(f"{reg_id}: {interest_name} Отдаем команду на распознавание (выстерлил и забыл)")
-                        asyncio.create_task(
-                            self.qt_rm_client.recognize_webdav(interest_name=interest_name)
-                        )
-                    total_src_removed = 0
-                    for ch, info in channels_info.items():
-                        sources = (info or {}).get("concat_sources") or []
-                        for fp in sources:
-                            try:
-                                if os.path.exists(fp):
-                                    os.remove(fp)
-                                    total_src_removed += 1
-                            except Exception as e:
-                                logger.warning(f"{reg_id}: Не удалось удалить исходник {fp}: {e}")
-                    interest_temp_folder = os.path.join(settings.TEMP_FOLDER,
-                                                        interest_name)
-                    if os.path.exists(interest_temp_folder):
-                        logger.info(
-                            f"{reg_id}: Удаляем временную директорию интереса {interest_name}. ({interest_temp_folder}).")
-                        shutil.rmtree(interest_temp_folder)
-                try:
-                    main_funcs.remove_pending_interest(reg_id, interest_name)
-                except Exception as e:
-                    logger.warning(f"{reg_id}: Не удалось удалить {interest_name} из pending_interests: {e}")
-
-                logger.info(f"{reg_id}: V2 завершено. Upload={upload_status}. Удалено видеофайлов: {removed}.")
-
-
-            await cloud_uploader.append_report_line_to_cloud_async(
-                remote_folder_path=cloud_paths["date_folder_path"],
-                created_start_time=created_start_time.strftime(self.TIME_FMT),
-                created_end_time=datetime.datetime.now().strftime(self.TIME_FMT),
-                file_name=interest_name
-            )
-
-            # Маркируем интерес как обработанный (локально)
-            #main_funcs._save_processed(reg_id, interest_name)
-
-            return interest["end_time"]
-
         # Стартуем задачи (сами ограничители внутри)
-        tasks = [asyncio.create_task(_process_one_interest(it)) for it in interests]
+        tasks = [asyncio.create_task(self._process_one_interest(it)) for it in interests]
 
         # Собираем результаты по мере готовности
         end_times: list[str] = []
@@ -370,8 +203,171 @@ class Main:
             for t in tasks:
                 if not t.done():
                     t.cancel()
+        logger.info(f"{reg_id}: Пакет интересов завершён: {len(end_times)}/{len(interests)}")
 
-        logger.info(f"{reg_id}. Пакет интересов завершён: {len(end_times)}/{len(interests)};")
+
+    async def _process_one_interest(self, interest: dict) -> str | None:
+        reg_id = interest.get("reg_id")
+        channel_id = interest.get("channel_id")
+        async with self._global_interests_sem, self._get_device_sem(reg_id): # Ограничители глобально и по устройство
+            created_start_time = datetime.datetime.now()
+            interest_name = interest["name"]
+            nearby_point =  geo_funcs.find_nearby_name(
+                interest["report"]["geo"], self.ignore_points,
+                settings.config.getint("Interests", "IGNORE_POINTS_TOLERANCE"))
+            if nearby_point:
+                logger.info(f"{reg_id}: Пропускаем интерес {interest_name}, "
+                            f"интерес зафиксирован рядом {interest['report']['geo']} с точкой игнора - {nearby_point}")
+                return None
+
+            logger.info(f"{reg_id}: Начинаем работу с интересом {interest_name}")
+            logger.debug(f"{interest}")
+
+            # Создаём пути в облаке под интерес
+            cloud_paths = await cloud_uploader.create_interest_folder_path_async(
+                name=interest_name,
+                dest=settings.CLOUD_PATH
+            )
+
+            if not cloud_paths:
+                logger.error(f"{reg_id}: Не удалось создать папки для {interest_name}. Пропускаем интерес.")
+                return interest["end_time"]
+
+            interest_cloud_folder = cloud_paths["interest_folder_path"]
+            interest["cloud_folder"] = interest_cloud_folder
+            pics_after_folder = posixpath.join(interest_cloud_folder, "after_pics")
+            pics_before_folder = posixpath.join(interest_cloud_folder, "before_pics")
+            interest["pics_before_folder"] = pics_before_folder
+            interest["pics_after_folder"] = pics_after_folder
+            await cloud_uploader.acreate_folder_if_not_exists(cloud_uploader.client, pics_before_folder)
+            await cloud_uploader.acreate_folder_if_not_exists(cloud_uploader.client, pics_after_folder)
+
+            # 1) проверяем наличие полного видео интереса в облаке
+            interest_video_exists = await cloud_uploader.check_if_interest_video_exists(interest_name)
+
+            # 2) какие каналы нужны для кадров
+            before_channels_to_download, after_channels_to_download = await self.get_channels_to_download_pics(
+                interest_cloud_folder
+            )
+
+            # 3) если видео по интересу в облаке НЕТ — добавляем канал полного ролика
+            to_download_for_full_clip = [channel_id] if not interest_video_exists else []
+
+            # детерминированное объединение без дублей
+            final_channels_to_download = sorted({
+                *before_channels_to_download,
+                *after_channels_to_download,
+                *to_download_for_full_clip
+            })
+
+            logger.debug(
+                f"{reg_id}. {interest_name} Нужно скачать видео интереса: {not interest_video_exists}. "
+                f"Кадры ДО: {before_channels_to_download}. "
+                f"Кадры ПОСЛЕ: {after_channels_to_download}. "
+                f"Итого каналы: {final_channels_to_download}"
+            )
+
+            if not final_channels_to_download:
+                logger.info("Нечего скачивать, все материалы уже есть в облаке.")
+                return None
+
+            # 4) скачиваем по одному клипу на канал
+            channels_files_dict = await cms_api.download_single_clip_per_channel(
+                jsession=self.jsession,
+                reg_id=reg_id,
+                interest=interest,
+                channels=final_channels_to_download
+            )
+            # оставляем полную структуру для доступа к concat_sources при отладке
+            channels_info = channels_files_dict
+
+            channels_paths = {ch: info["path"] for ch, info in channels_info.items() if info and info.get("path")}
+            # 5) если надо — выгружаем «полный» клип в облако (только для chanel_id)
+            full_clip_upload_status = False
+            full_clip_path = None
+            if not interest_video_exists:
+                file_dict = channels_files_dict.get(channel_id)
+                full_clip_path = file_dict["path"]
+                if full_clip_path:
+                     full_clip_upload_status = await self.upload_interest_video_cloud(
+                        reg_id=reg_id,
+                        interest_name=interest_name,
+                        video_path=full_clip_path,
+                        cloud_folder=cloud_paths["interest_folder_path"]
+                    )
+                else:
+                    logger.warning(
+                        f"{reg_id}: Полный клип по каналу {channel_id} не получен — пропускаем загрузку видео.")
+
+            await cloud_uploader.aupload_dict_as_json_to_cloud(
+                data=interest["report"],
+                remote_folder_path=interest["cloud_folder"]
+            )
+
+            # 6) извлекаем кадры из КАЖДОГО скачанного клипа и выгружаем их
+            upload_status = await self.process_frames_before_after(
+                reg_id, interest, channels_paths  # ← передаём словарь!!!
+            )
+            ok_frames = bool(upload_status and upload_status.get("upload_status"))
+            logger.info(f"Результат загрузки изображений: {ok_frames}")
+
+            # 7) чистим локальные клипы (кроме «полного» по нужному каналу)
+            removed = cms_api.delete_videos_except(
+                videos_by_channel=channels_paths,
+                keep_channel_id=channel_id if not interest_video_exists else None
+            )
+            all_done_ok = bool(ok_frames and (interest_video_exists or full_clip_upload_status))
+
+            if full_clip_path:
+                if full_clip_upload_status:
+                    logger.info(
+                        f"{reg_id}: Удаляем локальное видео интереса {interest_name}. ({full_clip_path}).")
+                    if os.path.exists(full_clip_path):
+                        os.remove(full_clip_path)
+                else:
+                    logger.error(f"{reg_id}: Не удалось загрузить видео интереса в {interest_name}.")
+            if all_done_ok:
+                if settings.config.getboolean("QT_RM", "enable_recognition"):
+                    logger.info(f"{reg_id}: {interest_name} Отдаем команду на распознавание (выстерлил и забыл)")
+                    asyncio.create_task(
+                        self.qt_rm_client.recognize_webdav(interest_name=interest_name)
+                    )
+                total_src_removed = 0
+                for ch, info in channels_info.items():
+                    sources = (info or {}).get("concat_sources") or []
+                    for fp in sources:
+                        try:
+                            if os.path.exists(fp):
+                                os.remove(fp)
+                                total_src_removed += 1
+                        except Exception as e:
+                            logger.warning(f"{reg_id}: Не удалось удалить исходник {fp}: {e}")
+                interest_temp_folder = os.path.join(settings.TEMP_FOLDER,
+                                                    interest_name)
+                if os.path.exists(interest_temp_folder):
+                    logger.info(
+                        f"{reg_id}: Удаляем временную директорию интереса {interest_name}. ({interest_temp_folder}).")
+                    shutil.rmtree(interest_temp_folder)
+            try:
+                main_funcs.remove_pending_interest(reg_id, interest_name)
+            except Exception as e:
+                logger.warning(f"{reg_id}: Не удалось удалить {interest_name} из pending_interests: {e}")
+
+            logger.info(f"{reg_id}: V2 завершено. Upload={upload_status}. Удалено видеофайлов: {removed}.")
+
+
+        await cloud_uploader.append_report_line_to_cloud_async(
+            remote_folder_path=cloud_paths["date_folder_path"],
+            created_start_time=created_start_time.strftime(self.TIME_FMT),
+            created_end_time=datetime.datetime.now().strftime(self.TIME_FMT),
+            file_name=interest_name
+        )
+
+        # Маркируем интерес как обработанный (локально)
+        #main_funcs._save_processed(reg_id, interest_name)
+
+        return interest["end_time"]
+
 
     async def get_channels_to_download_pics(self, interest_cloud_path):
         pics_after_folder = posixpath.join(interest_cloud_path, "after_pics")
@@ -478,6 +474,10 @@ class Main:
           - сейчас > last_upload_time + 600 сек
         Делает догонку посуточно: [last_upload_time → конец дня], ... пока не дойдём до сегодняшнего,
         затем [начало сегодняшнего → сейчас].
+
+        ДОБАВЛЕНО: ограничение глубины по дням.
+        Берём интересы не старше N суток от текущего момента (N = MAX_LOOKBACK_DAYS в конфиге).
+        Если last_upload_time старее допустимого окна — старт смещаем вперёд до (now - N дней).
         """
         if reg_id in self._interest_refill_in_progress:
             return
@@ -488,18 +488,31 @@ class Main:
             reg_info = main_funcs.get_reg_info(reg_id)
             last_up_str = reg_info.get("last_upload_time")
             if not last_up_str:
+                # как и раньше: если ничего нет — считаем 7 дней назад
                 last_up_str = (datetime.datetime.now() - datetime.timedelta(days=7)).strftime(TIME_FMT)
 
             last_up = datetime.datetime.strptime(last_up_str, TIME_FMT)
             now = datetime.datetime.now()
+
             # антиспам: только если вышло окно 600с
             if (now - last_up).total_seconds() < 600:
                 return  # рано
 
-            # будем накапливать найденные интересы сюда
+            # --- НОВОЕ: ограничение глубины по дням ---
+            max_lookback_days = settings.config.getint("Interests", "MAX_LOOKBACK_DAYS", fallback=0)
+            if max_lookback_days > 0:
+                earliest_allowed = now - datetime.timedelta(days=max_lookback_days)
+                if last_up < earliest_allowed:
+                    # Не переписываем last_upload_time назад в файл — работаем «эффективным» стартом только в этом проходе
+                    logger.info(
+                        f"{reg_id}: last_upload_time={last_up.strftime(TIME_FMT)} старее окна "
+                        f"{max_lookback_days}d → берём не глубже {earliest_allowed.strftime(TIME_FMT)}."
+                    )
+                    last_up = earliest_allowed
+            # -----------------------------------------
+
             collected: list[dict] = []
 
-            # 1) добегаем до конца того дня, если last_upload_time не сегодня
             def day_end(dt: datetime.datetime) -> datetime.datetime:
                 return dt.replace(hour=23, minute=59, second=59)
 
@@ -519,11 +532,10 @@ class Main:
                 if interests:
                     interests = merge_overlapping_interests(interests)
                     collected.extend(interests)
-                # после закрытия дня двигаем last_upload_time до конца дня
+                # после закрытия дня двигаем last_upload_time до конца дня (как и раньше)
                 main_funcs.save_new_reg_last_upload_time(reg_id, en)
                 cur = en_dt + datetime.timedelta(seconds=1)
 
-            # 2) сегодняшний хвост: от max(cur, day_start(now)) до now
             if cur <= now:
                 st = cur.strftime(TIME_FMT)
                 en = now.strftime(TIME_FMT)
@@ -532,16 +544,13 @@ class Main:
                 if interests:
                     interests = merge_overlapping_interests(interests)
                     collected.extend(interests)
-                # фиксируем last_upload_time = now
                 main_funcs.save_new_reg_last_upload_time(reg_id, en)
 
-            # 3) кладём всё найденное в очередь (с дедупом по имени — реализован в append_*).
             if collected:
                 main_funcs.append_pending_interests(reg_id, collected)
 
         finally:
             self._interest_refill_in_progress.discard(reg_id)
-
 
 async def _run():
     d = Main()

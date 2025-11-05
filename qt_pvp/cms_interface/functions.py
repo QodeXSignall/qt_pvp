@@ -448,7 +448,6 @@ def find_interests_by_lifting_switches(
         # Защита от выхода за границы для next_track
         if i + 1 >= len(tracks):
             break
-
         track = tracks[i]
         next_track = tracks[i + 1]
         cur_speed = int(track.get("sp") or 0)
@@ -623,6 +622,8 @@ def find_interests_by_lifting_switches(
                 if first_interest:
                     logger.warning(f"{reg_id}: [BEFORE] Это был первый интерес, возвращаемся для получения дополнительных треков")
                     return {"error": "No stop before switch found for first interest"}
+                else:
+                    time_after = current_dt - datetime.timedelta(seconds=120)
 
             lifting_end_idx = i
             last_switch_index = i
