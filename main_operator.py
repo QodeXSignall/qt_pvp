@@ -175,7 +175,8 @@ class Main:
             logger.info(f"{reg_id}: Влезают все интересы ({total_found}) в одну пачку.")
 
         # Стартуем задачи (сами ограничители внутри)
-        tasks = [asyncio.create_task(self._process_one_interest(it)) for it in interests]
+        channel_id = reg_info.get("channel_id")
+        tasks = [asyncio.create_task(self._process_one_interest(it, channel_id)) for it in interests]
 
         # Собираем результаты по мере готовности
         end_times: list[str] = []
@@ -206,9 +207,8 @@ class Main:
         logger.info(f"{reg_id}: Пакет интересов завершён: {len(end_times)}/{len(interests)}")
 
 
-    async def _process_one_interest(self, interest: dict) -> str | None:
+    async def _process_one_interest(self, interest: dict, channel_id) -> str | None:
         reg_id = interest.get("reg_id")
-        channel_id = interest.get("channel_id")
         async with self._global_interests_sem, self._get_device_sem(reg_id): # Ограничители глобально и по устройство
             created_start_time = datetime.datetime.now()
             interest_name = interest["name"]
@@ -252,7 +252,7 @@ class Main:
 
             # 3) если видео по интересу в облаке НЕТ — добавляем канал полного ролика
             to_download_for_full_clip = [channel_id] if not interest_video_exists else []
-            print("BEFORE,AFTER,FULL", before_channels_to_download, after_channels_to_download, to_download_for_full_clip)
+            logger.debug(f"BEFORE,AFTER,FULL: {before_channels_to_download}, {after_channels_to_download}, {to_download_for_full_clip}")
             # детерминированное объединение без дублей
             final_channels_to_download = sorted({
                 *before_channels_to_download,
@@ -381,8 +381,6 @@ class Main:
 
         before_exists = await asyncio.gather(*before_checks)
         after_exists = await asyncio.gather(*after_checks)
-        print("BEFORE_EXISTS", before_exists)
-        print("AFTER_EXISTS", after_exists)
         before_channels_to_download = [ch for ch, exists in zip(channels, before_exists) if not exists]
         after_channels_to_download = [ch for ch, exists in zip(channels, after_exists) if not exists]
         return before_channels_to_download, after_channels_to_download
