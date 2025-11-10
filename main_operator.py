@@ -54,7 +54,7 @@ class Main:
             return
         self.devices_in_progress.append(reg_id)
         try:
-            await self.download_reg_videos(reg_id, plate, by_trigger=True)
+            await self.download_reg_videos(reg_id, plate)
         except Exception:
             logger.error(traceback.format_exc())
         finally:
