@@ -17,7 +17,8 @@ class LoadingInProgress(RuntimeError):
 
 def get_interest_from_track(track, start_time: str, end_time: str,
                             photo_before_timestamp: str = None,
-                            photo_after_timestamp: str = None):
+                            photo_after_timestamp: str = None,
+                            reg_id = None):
     start_time_datetime = datetime.datetime.strptime(start_time,
                                                      "%Y-%m-%d %H:%M:%S")
     end_time_datetime = datetime.datetime.strptime(end_time,
@@ -37,7 +38,7 @@ def get_interest_from_track(track, start_time: str, end_time: str,
                 f"{end_time_datetime.hour:02d}."
                 f"{end_time_datetime.minute:02d}."
                 f"{end_time_datetime.second:02d}",
-        "reg_id": track['did'],
+        "reg_id": reg_id,
         "beg_sec": seconds_since_midnight(start_time_datetime),
         "end_sec": seconds_since_midnight(end_time_datetime),
         "year": start_time_datetime.year,
@@ -206,7 +207,8 @@ def prepare_alarms(raw_alarms: List[Dict[str, Any]],
                    reg_cfg: Dict[str, Any],
                    allowed_atp: set[int] = frozenset({19,20,21,22}),
                    min_stop_speed_kmh: float = 5.0,
-                   merge_gap_sec: int = 15) -> Dict[str, Any]:
+                   merge_gap_sec: int = 15,
+                   reg_id = None) -> Dict[str, Any]:
     """
     Превращает raw alarms из API в удобный список для поиска «в разрывах».
     Возвращает:
@@ -253,7 +255,7 @@ def prepare_alarms(raw_alarms: List[Dict[str, Any]],
 
         norm.append({
             "guid": a.get("guid"),
-            "dev_idno": a.get("did"),
+            "dev_idno": reg_id,
             "plate": a.get("vid"),
             "atp": a.get("atp"),
             "atpStr": a.get("atpStr"),
@@ -559,6 +561,7 @@ def find_interests_by_lifting_switches(
                     end_time=end_time,
                     photo_before_timestamp=time_before,
                     photo_after_timestamp=time_after_adj,
+                    reg_id=reg_id,
                 )
                 interval["report"] = {
                     "cargo_type": cargo_type_alarm,  # уже нормализованный "Контейнер"/"Бункер"
@@ -752,7 +755,8 @@ def find_interests_by_lifting_switches(
                     start_time=time_before,
                     end_time=end_time,
                     photo_before_timestamp=time_before,
-                    photo_after_timestamp=time_after
+                    photo_after_timestamp=time_after,
+                    reg_id=reg_id,
                 )
                 interval["report"] = {
                     "cargo_type": cargo_type,

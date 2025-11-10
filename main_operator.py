@@ -44,7 +44,7 @@ class Main:
         devices_online = await cms_api.get_online_devices(self.jsession)
         devices_online = devices_online.json()["onlines"]
         if devices_online:
-            logger.info(f"Got devices online: {devices_online}")
+            logger.debug(f"Got devices online: {devices_online}")
         else:
             logger.debug("No devices online (empty 'onlines').")
         return devices_online
@@ -93,7 +93,8 @@ class Main:
                 reg_cfg=reg_info,
                 allowed_atp=frozenset({19, 20, 21, 22}),
                 min_stop_speed_kmh=settings.config.getint("Interests", "MIN_STOP_SPEED") / 10.0,
-                merge_gap_sec=15
+                merge_gap_sec=15,
+                reg_id=reg_id
             )
             try:
                 interests = cms_api_funcs.find_interests_by_lifting_switches(
