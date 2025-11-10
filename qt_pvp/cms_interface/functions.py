@@ -37,7 +37,7 @@ def get_interest_from_track(track, start_time: str, end_time: str,
                 f"{end_time_datetime.hour:02d}."
                 f"{end_time_datetime.minute:02d}."
                 f"{end_time_datetime.second:02d}",
-        "reg_id": track['vid'],
+        "reg_id": track['did'],
         "beg_sec": seconds_since_midnight(start_time_datetime),
         "end_sec": seconds_since_midnight(end_time_datetime),
         "year": start_time_datetime.year,
