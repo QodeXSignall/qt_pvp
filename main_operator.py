@@ -252,7 +252,7 @@ class Main:
 
             # 3) если видео по интересу в облаке НЕТ — добавляем канал полного ролика
             to_download_for_full_clip = [channel_id] if not interest_video_exists else []
-
+            print("BEFORE,AFTER,FULL", before_channels_to_download, after_channels_to_download, to_download_for_full_clip)
             # детерминированное объединение без дублей
             final_channels_to_download = sorted({
                 *before_channels_to_download,
@@ -381,7 +381,8 @@ class Main:
 
         before_exists = await asyncio.gather(*before_checks)
         after_exists = await asyncio.gather(*after_checks)
-
+        print("BEFORE_EXISTS", before_exists)
+        print("AFTER_EXISTS", after_exists)
         before_channels_to_download = [ch for ch, exists in zip(channels, before_exists) if not exists]
         after_channels_to_download = [ch for ch, exists in zip(channels, after_exists) if not exists]
         return before_channels_to_download, after_channels_to_download
