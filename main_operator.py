@@ -175,7 +175,7 @@ class Main:
             logger.info(f"{reg_id}: Влезают все интересы ({total_found}) в одну пачку.")
 
         # Стартуем задачи (сами ограничители внутри)
-        channel_id = reg_info.get("channel_id")
+        channel_id = reg_info.get("chanel_id")
         tasks = [asyncio.create_task(self._process_one_interest(it, channel_id)) for it in interests]
 
         # Собираем результаты по мере готовности
