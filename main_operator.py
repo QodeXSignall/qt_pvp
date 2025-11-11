@@ -218,7 +218,8 @@ class Main:
                 settings.config.getint("Interests", "IGNORE_POINTS_TOLERANCE"))
             if nearby_point:
                 logger.info(f"{reg_id}: Пропускаем интерес {interest_name}, "
-                            f"интерес зафиксирован рядом {interest['report']['geo']} с точкой игнора - {nearby_point}")
+                            f"интерес зафиксирован рядом {interest['report']['geo']} с точкой игнора - {nearby_point}"
+                self.del_pending_interest(reg_id, interest_name)
                 return None
 
             logger.info(f"{reg_id}: Начинаем работу с интересом {interest_name}")
@@ -232,6 +233,7 @@ class Main:
 
             if not cloud_paths:
                 logger.error(f"{reg_id}: Не удалось создать папки для {interest_name}. Пропускаем интерес.")
+                self.del_pending_interest(reg_id, interest_name)
                 return interest["end_time"]
 
             interest_cloud_folder = cloud_paths["interest_folder_path"]
@@ -270,6 +272,7 @@ class Main:
 
             if not final_channels_to_download:
                 logger.info("Нечего скачивать, все материалы уже есть в облаке.")
+                self.del_pending_interest(reg_id, interest_name)
                 return None
 
             # 4) скачиваем по одному клипу на канал
@@ -349,13 +352,9 @@ class Main:
                     logger.info(
                         f"{reg_id}: Удаляем временную директорию интереса {interest_name}. ({interest_temp_folder}).")
                     shutil.rmtree(interest_temp_folder)
-            try:
-                main_funcs.remove_pending_interest(reg_id, interest_name)
-            except Exception as e:
-                logger.warning(f"{reg_id}: Не удалось удалить {interest_name} из pending_interests: {e}")
+            self.del_pending_interest(reg_id, interest_name)
 
             logger.info(f"{reg_id}: V2 завершено. Upload={upload_status}. Удалено видеофайлов: {removed}.")
-
 
         await cloud_uploader.append_report_line_to_cloud_async(
             remote_folder_path=cloud_paths["date_folder_path"],
@@ -368,6 +367,12 @@ class Main:
         #main_funcs._save_processed(reg_id, interest_name)
 
         return interest["end_time"]
+
+    def del_pending_interest(self, reg_id, interest_name):
+        try:
+            main_funcs.remove_pending_interest(reg_id, interest_name)
+        except Exception as e:
+            logger.warning(f"{reg_id}: Не удалось удалить {interest_name} из pending_interests: {e}")
 
 
     async def get_channels_to_download_pics(self, interest_cloud_path):
