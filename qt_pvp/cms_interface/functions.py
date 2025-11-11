@@ -451,6 +451,7 @@ def find_interests_by_lifting_switches(
         if i + 1 >= len(tracks):
             break
         track = tracks[i]
+        #print(track)
         next_track = tracks[i + 1]
         cur_speed = int(track.get("sp") or 0)
         t_curr_dt = track.get("gt")  # строка (для логов)
@@ -637,11 +638,9 @@ def find_interests_by_lifting_switches(
                 switch_events.append({"datetime": timestamp, "switch": kgo_bit_idx})
 
             # В этом цикле мы перебираем треки и ищем трек, когда погрузка закочена (по скорости и концевику)
-            logger.debug(f"{reg_id}: [Конец интереса]  Теперь ищем когда машина поехала после погрузки.")
-
+            logger.debug(f"{reg_id}: [Конец интереса] Начало интереса найдено. Теперь ищем конец интереса.")
+            logger.debug(f"Для начала пойдем вперед по трекам и найдем момент, когда машина двинулась")
             move_started_at = None
-            first_stop = None
-
             while lifting_end_idx + 1 < len(tracks):
                 next_track = tracks[lifting_end_idx + 1]
                 next_s1 = next_track.get("s1")
@@ -684,11 +683,12 @@ def find_interests_by_lifting_switches(
                     if move_started_at is None:
                         move_started_at = ts
                         move_started_at_str = sw_time
-                        logger.debug(f"{reg_id}: Убедились, что машина поехала на {move_started_at_str}.")
+                        logger.debug(f"{reg_id}: [Конец интереса] Убедились, что машина поехала на {move_started_at_str}.")
                     lifting_end_idx += 1
-                    logger.debug(f"Проверяем достаточно прошло ли времени - {int(ts - move_started_at) >= int(min_move_duration)}. "
-                                 f"ts - ({ts}), min_move_duration - {min_move_duration}, lifting_end_idx - {lifting_end_idx}.")
+                    logger.debug(f"{reg_id}: [Конец интереса] Проверяем достаточно прошло ли времени - {int(ts - move_started_at) >= int(min_move_duration)}. "
+                                 f"cur_time - ({sw_time}), min_move_duration - {min_move_duration}, lifting_end_idx - {lifting_end_idx}.")
                     if ts - move_started_at >= int(min_move_duration):
+                        logger.debug(f"{reg_id}: [Конец интереса] Времени прошло достаточно")
                         break
 
             logger.debug(f"{reg_id}: [Конец интереса] Вышли из цикла поиска движения после последнего концевика. "

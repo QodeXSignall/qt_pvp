@@ -32,3 +32,7 @@ class TestCase(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+# Лишний конец
+[2,8,0.5,0,0,0]
