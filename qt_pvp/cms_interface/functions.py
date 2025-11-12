@@ -641,6 +641,7 @@ def find_interests_by_lifting_switches(
             logger.debug(f"{reg_id}: [Конец интереса] Начало интереса найдено. Теперь ищем конец интереса.")
             logger.debug(f"Для начала пойдем вперед по трекам и найдем момент, когда машина двинулась")
             move_started_at = None
+            move_started_at_str = None
             while lifting_end_idx + 1 < len(tracks):
                 next_track = tracks[lifting_end_idx + 1]
                 next_s1 = next_track.get("s1")
