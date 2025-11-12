@@ -135,9 +135,10 @@ async def main(day_str = DAY_STR, reg_id = REG_ID):
 
 if __name__ == "__main__":
     for day in [
-        "2025.11.09",
+        "2025.11.12",
         #"2025.10.20"
     ]:
         #day = "2025.08.17"
-        reg_id = "108411"
+        #reg_id = "108411"
+        reg_id = "018270348452"
         asyncio.run(main(day_str=day, reg_id=reg_id))
