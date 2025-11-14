@@ -536,7 +536,7 @@ class Main:
                 if interests:
                     interests = merge_overlapping_interests(interests)
                     collected.extend(interests)
-                    en = max(interest["time_end"] for interest in interests)
+                    en = max(interest["end_time"] for interest in interests)
                 # после закрытия дня двигаем last_upload_time до конца дня (как и раньше)
                 main_funcs.save_new_reg_last_upload_time(reg_id, en)
                 cur = en_dt + datetime.timedelta(seconds=1)
@@ -549,7 +549,7 @@ class Main:
                 if interests:
                     interests = merge_overlapping_interests(interests)
                     collected.extend(interests)
-                    en = max(interest["time_end"] for interest in interests)
+                    en = max(interest["end_time"] for interest in interests)
                 main_funcs.save_new_reg_last_upload_time(reg_id, en)
 
             if collected:
