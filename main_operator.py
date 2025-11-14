@@ -531,12 +531,12 @@ class Main:
                 st = cur.strftime(TIME_FMT)
                 en_dt = day_end(cur)
                 en = en_dt.strftime(TIME_FMT)
-
                 reg_cfg = main_funcs.get_reg_info(reg_id) or main_funcs.create_new_reg(reg_id, plate=None)
                 interests = await self.get_interests_async(reg_id, reg_cfg, st, en)
                 if interests:
                     interests = merge_overlapping_interests(interests)
                     collected.extend(interests)
+                    en = max(interest["time_end"] for interest in interests)
                 # после закрытия дня двигаем last_upload_time до конца дня (как и раньше)
                 main_funcs.save_new_reg_last_upload_time(reg_id, en)
                 cur = en_dt + datetime.timedelta(seconds=1)
@@ -549,6 +549,7 @@ class Main:
                 if interests:
                     interests = merge_overlapping_interests(interests)
                     collected.extend(interests)
+                    en = max(interest["time_end"] for interest in interests)
                 main_funcs.save_new_reg_last_upload_time(reg_id, en)
 
             if collected:
