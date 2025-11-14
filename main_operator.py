@@ -336,6 +336,7 @@ class Main:
                     asyncio.create_task(
                         self.qt_rm_client.recognize_webdav(interest_name=interest_name)
                     )
+                    self.del_pending_interest(reg_id, interest_name)
                 total_src_removed = 0
                 for ch, info in channels_info.items():
                     sources = (info or {}).get("concat_sources") or []
@@ -352,7 +353,6 @@ class Main:
                     logger.info(
                         f"{reg_id}: Удаляем временную директорию интереса {interest_name}. ({interest_temp_folder}).")
                     shutil.rmtree(interest_temp_folder)
-            self.del_pending_interest(reg_id, interest_name)
 
             logger.info(f"{reg_id}: V2 завершено. Upload={upload_status}. Удалено видеофайлов: {removed}.")
 
