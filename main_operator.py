@@ -475,14 +475,21 @@ class Main:
 
     async def _refill_pending_interests_if_due(self, reg_id: str) -> None:
         """
-        Пополняет очередь pending_interests для reg_id, если наступил срок:
-          - сейчас > last_upload_time + 600 сек
-        Делает догонку посуточно: [last_upload_time → конец дня], ... пока не дойдём до сегодняшнего,
-        затем [начало сегодняшнего → сейчас].
+        Пополняет очередь pending_interests для reg_id двумя способами:
 
-        ДОБАВЛЕНО: ограничение глубины по дням.
-        Берём интересы не старше N суток от текущего момента (N = MAX_LOOKBACK_DAYS в конфиге).
-        Если last_upload_time старее допустимого окна — старт смещаем вперёд до (now - N дней).
+        1) "Обычный" forward-проход (как раньше):
+           - если сейчас > last_upload_time + 600 сек:
+             - догоняем интервал [last_upload_time → now] посуточно,
+               обновляя last_upload_time по мере продвижения.
+
+        2) Новый recheck-проход по "верифицированному" интервалу:
+           - берём verified_until (если его нет — используем last_upload_time),
+           - если прошло >= VERIFIED_RECHECK_HOURS часов,
+             ещё раз проверяем интервал [verified_until → now]
+             и досовываем новые интересы в pending_interests.
+
+        Ограничение глубины по дням (MAX_LOOKBACK_DAYS) применяется и к last_upload_time,
+        и к verified_until, чтобы не уходить слишком далеко в прошлое.
         """
         if reg_id in self._interest_refill_in_progress:
             return
@@ -491,30 +498,59 @@ class Main:
             TIME_FMT = "%Y-%m-%d %H:%M:%S"
 
             reg_info = main_funcs.get_reg_info(reg_id)
+
+            # --- last_upload_time (как раньше) ---
             last_up_str = reg_info.get("last_upload_time")
             if not last_up_str:
                 # как и раньше: если ничего нет — считаем 7 дней назад
                 last_up_str = (datetime.datetime.now() - datetime.timedelta(days=7)).strftime(TIME_FMT)
-
             last_up = datetime.datetime.strptime(last_up_str, TIME_FMT)
+
             now = datetime.datetime.now()
 
-            # антиспам: только если вышло окно 600с
-            if (now - last_up).total_seconds() < 600:
-                return  # рано
+            # --- новый verified_until ---
+            verified_str = reg_info.get("verified_until") or last_up_str
+            try:
+                verified_dt = datetime.datetime.strptime(verified_str, TIME_FMT)
+            except Exception:
+                logger.warning(
+                    f"{reg_id}: Некорректный verified_until='{verified_str}', "
+                    f"сбрасываем к last_upload_time={last_up_str}."
+                )
+                verified_dt = last_up
 
-            # --- НОВОЕ: ограничение глубины по дням ---
+            # --- флаги "пора ли что-то делать" ---
+            # forward-проход — как был: не чаще, чем раз в 600 секунд
+            forward_due = (now - last_up).total_seconds() >= 600
+
+            # recheck-проход — раз в N часов (Interests.VERIFIED_RECHECK_HOURS, по умолчанию 6)
+            recheck_hours = settings.config.getint("Interests", "VERIFIED_RECHECK_HOURS", fallback=6)
+            recheck_due = False
+            if recheck_hours > 0:
+                recheck_due = (now - verified_dt).total_seconds() >= recheck_hours * 3600
+
+            if not forward_due and not recheck_due:
+                # ни обычная догонка, ни recheck ещё не нужны
+                return
+
+            # --- ограничение глубины по дням (и для last_up, и для verified_dt) ---
             max_lookback_days = settings.config.getint("Interests", "MAX_LOOKBACK_DAYS", fallback=0)
             if max_lookback_days > 0:
                 earliest_allowed = now - datetime.timedelta(days=max_lookback_days)
+
                 if last_up < earliest_allowed:
-                    # Не переписываем last_upload_time назад в файл — работаем «эффективным» стартом только в этом проходе
                     logger.info(
                         f"{reg_id}: last_upload_time={last_up.strftime(TIME_FMT)} старее окна "
                         f"{max_lookback_days}d → берём не глубже {earliest_allowed.strftime(TIME_FMT)}."
                     )
                     last_up = earliest_allowed
-            # -----------------------------------------
+
+                if verified_dt < earliest_allowed:
+                    logger.info(
+                        f"{reg_id}: verified_until={verified_dt.strftime(TIME_FMT)} старее окна "
+                        f"{max_lookback_days}d → подрезаем до {earliest_allowed.strftime(TIME_FMT)}."
+                    )
+                    verified_dt = earliest_allowed
 
             collected: list[dict] = []
 
@@ -524,39 +560,67 @@ class Main:
             def day_start(dt: datetime.datetime) -> datetime.datetime:
                 return dt.replace(hour=0, minute=0, second=0)
 
-            cur = last_up
-            today = now.date()
+            # --- 1) Обычный forward-проход от last_upload_time к now ---
+            if forward_due:
+                cur = last_up
+                today = now.date()
 
-            while cur.date() < today:
-                st = cur.strftime(TIME_FMT)
-                en_dt = day_end(cur)
-                en = en_dt.strftime(TIME_FMT)
-                reg_cfg = main_funcs.get_reg_info(reg_id) or main_funcs.create_new_reg(reg_id, plate=None)
-                interests = await self.get_interests_async(reg_id, reg_cfg, st, en)
-                if interests:
-                    interests = merge_overlapping_interests(interests)
-                    collected.extend(interests)
-                    en = max(interest["end_time"] for interest in interests)
-                # после закрытия дня двигаем last_upload_time до конца дня (как и раньше)
-                main_funcs.save_new_reg_last_upload_time(reg_id, en)
-                cur = en_dt + datetime.timedelta(seconds=1)
+                # догоняем до "вчера включительно" посуточно
+                while cur.date() < today:
+                    st = cur.strftime(TIME_FMT)
+                    en_dt = day_end(cur)
+                    en = en_dt.strftime(TIME_FMT)
 
-            if cur <= now:
-                st = cur.strftime(TIME_FMT)
+                    reg_cfg = main_funcs.get_reg_info(reg_id) or main_funcs.create_new_reg(reg_id, plate=None)
+                    interests = await self.get_interests_async(reg_id, reg_cfg, st, en)
+                    if interests:
+                        interests = merge_overlapping_interests(interests)
+                        collected.extend(interests)
+                        # двигаем "фактический" конец до конца последнего интереса
+                        en = max(interest["end_time"] for interest in interests)
+
+                    # после закрытия дня двигаем last_upload_time до конца дня (как и раньше)
+                    main_funcs.save_new_reg_last_upload_time(reg_id, en)
+                    cur = en_dt + datetime.timedelta(seconds=1)
+
+                # остаток "сегодня до текущего момента"
+                if cur <= now:
+                    st = cur.strftime(TIME_FMT)
+                    en = now.strftime(TIME_FMT)
+                    reg_cfg = main_funcs.get_reg_info(reg_id) or main_funcs.create_new_reg(reg_id, plate=None)
+                    interests = await self.get_interests_async(reg_id, reg_cfg, st, en)
+                    if interests:
+                        interests = merge_overlapping_interests(interests)
+                        collected.extend(interests)
+                        en = max(interest["end_time"] for interest in interests)
+                    main_funcs.save_new_reg_last_upload_time(reg_id, en)
+
+            # --- 2) Recheck-проход от verified_until к now ---
+            if recheck_due:
+                st = verified_dt.strftime(TIME_FMT)
                 en = now.strftime(TIME_FMT)
+
+                logger.info(
+                    f"{reg_id}: RECHECK интервала [{st} → {en}] "
+                    f"после паузы {recheck_hours}ч."
+                )
+
                 reg_cfg = main_funcs.get_reg_info(reg_id) or main_funcs.create_new_reg(reg_id, plate=None)
                 interests = await self.get_interests_async(reg_id, reg_cfg, st, en)
                 if interests:
                     interests = merge_overlapping_interests(interests)
                     collected.extend(interests)
-                    en = max(interest["end_time"] for interest in interests)
-                main_funcs.save_new_reg_last_upload_time(reg_id, en)
 
+                # зафиксировали, что этот интервал проверен
+                main_funcs.save_reg_verified_until(reg_id, en)
+
+            # --- записываем всё, что накопили, в pending_interests (с дедупом по имени) ---
             if collected:
                 main_funcs.append_pending_interests(reg_id, collected)
 
         finally:
             self._interest_refill_in_progress.discard(reg_id)
+
 
 async def _run():
     d = Main()

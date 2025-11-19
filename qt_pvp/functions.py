@@ -18,12 +18,14 @@ import re
 
 def _default_new_reg_info(plate=None):
     last_upload = datetime.datetime.today() - datetime.timedelta(days=7)
-    datetime.datetime.today()
+    last_upload_str = last_upload.strftime("%Y-%m-%d %H:%M:%S")
     return {
         "ignore": False,
         "interests": [],
         "chanel_id": 0,
-        "last_upload_time": last_upload.strftime("%Y-%m-%d %H:%M:%S"),
+        "last_upload_time": last_upload_str,
+        # новая служебная метка: до какого момента мы уже делали "проверочный" проход
+        "verified_until": last_upload_str,
         "by_trigger": 1,
         "by_stops": 0,
         "by_door_limit_switch": 0,
@@ -299,6 +301,45 @@ def create_new_reg(reg_id, plate):
         ensure_alarms_structure_inplace(regs, reg_id)
         _atomic_save_states(states)
         return json.loads(json.dumps(regs[reg_id]))
+
+
+def save_reg_verified_until(reg_id: str, timestamp: str):
+    """
+    Обновляет поле verified_until у регистратора.
+    Логика похожа на last_upload_time:
+      - парсим timestamp;
+      - не даём откатываться назад.
+    """
+    try:
+        new_dt = datetime.datetime.strptime(timestamp, settings.TIME_FMT)
+    except Exception:
+        logger.warning(f"{reg_id}. Некорректный формат verified_until: {timestamp} — игнор.")
+        return
+
+    with FileLock(LOCK_PATH):
+        states = _load_states()
+        regs = states.setdefault("regs", {})
+        reg = regs.setdefault(reg_id, _default_new_reg_info())
+        ensure_alarms_structure_inplace(regs, reg_id)
+
+        cur_str = reg.get("verified_until")
+        cur_dt = None
+        if cur_str:
+            try:
+                cur_dt = datetime.datetime.strptime(cur_str, settings.TIME_FMT)
+            except Exception:
+                pass
+
+        # Разрешаем только вперёд (или на то же самое время)
+        if cur_dt is None or new_dt >= cur_dt:
+            reg["verified_until"] = timestamp
+            _atomic_save_states(states)
+            logger.info(f"{reg_id}. Обновлен `verified_until`: {timestamp}")
+        else:
+            logger.debug(
+                f"{reg_id}. Пропуск обновления verified_until "
+                f"(новое {timestamp} < текущее {cur_str})."
+            )
 
 
 def save_new_reg_last_upload_time(reg_id: str, timestamp: str):
