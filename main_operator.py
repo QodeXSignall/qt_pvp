@@ -84,7 +84,6 @@ class Main:
             all_alarms = []
             for page in alarm_reports:
                 all_alarms.extend(page.get("alarms") or [])
-
             #for alarm in all_alarms:
             #    print(alarm)
 
@@ -96,6 +95,7 @@ class Main:
                 merge_gap_sec=15,
                 reg_id=reg_id
             )
+
             try:
                 interests = cms_api_funcs.find_interests_by_lifting_switches(
                     tracks=tracks,
@@ -332,7 +332,7 @@ class Main:
                     logger.error(f"{reg_id}: Не удалось загрузить видео интереса в {interest_name}.")
             if all_done_ok:
                 if settings.config.getboolean("QT_RM", "enable_recognition"):
-                    logger.info(f"{reg_id}: {interest_name} Отдаем команду на распознавание (выстерлил и забыл)")
+                    logger.info(f"{reg_id}: {interest_name} Отдаем команду на распознавание (выстерлил-забыл)")
                     asyncio.create_task(
                         self.qt_rm_client.recognize_webdav(interest_name=interest_name)
                     )

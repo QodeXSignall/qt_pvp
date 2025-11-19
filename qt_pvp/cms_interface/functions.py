@@ -8,6 +8,7 @@ import functools
 import asyncio
 import httpx
 
+
 io_to_reg_map = {1: 20, 2: 21, 3: 22, 4: 23}
 
 
@@ -115,11 +116,14 @@ def _dedupe_sw(events: list[dict]) -> list[dict]:
 
 def _cluster_merge_stationary(norm: list[dict], min_stop_kmh: float, merge_gap_sec: int) -> list[dict]:
     """
-    Сливает подряд идущие алармы (ЛЮБОГО IO) в один кластер, если:
+    Сливает подряд идущие алармы ОДНОГО IO в один кластер, если:
       - один и тот же девайс
-      - стояли в момент старта
+      - один и тот же io_index
+      - стояли в момент старта (ssp_kmh <= min_stop_kmh)
       - промежуток между алармами не больше merge_gap_sec
-    Возвращает список кластеров; каждый кластер — как "alarms"-запись, но с полем switch_events/ io_indices_set.
+
+    Возвращает список кластеров; каждый кластер — как "alarms"-запись, но с полем
+    switch_events / io_indices_set.
     """
     if not norm:
         return []
@@ -128,10 +132,15 @@ def _cluster_merge_stationary(norm: list[dict], min_stop_kmh: float, merge_gap_s
     cur = None
 
     for a in norm:
+        # гарантируем наличие служебных полей
         a.setdefault("switch_events", [
             {"datetime": a["start_str"], "switch": a.get("io_index")}
         ])
-        a.setdefault("io_indices_set", set([a.get("io_index")] if a.get("io_index") is not None else []))
+        a.setdefault(
+            "io_indices_set",
+            set([a.get("io_index")] if a.get("io_index") is not None else [])
+        )
+
         a_stopped = a.get("ssp_kmh", 999) <= min_stop_kmh
 
         if cur is None:
@@ -140,20 +149,28 @@ def _cluster_merge_stationary(norm: list[dict], min_stop_kmh: float, merge_gap_s
             continue
 
         same_dev = (cur.get("dev_idno") == a.get("dev_idno"))
-        gap_ok = (a["start_ts"] - cur["end_ts"] <= merge_gap_sec)
-        if same_dev and a_stopped and gap_ok:
+        same_io  = (cur.get("io_index") == a.get("io_index"))
+        gap_ok   = (a["start_ts"] - cur["end_ts"] <= merge_gap_sec)
+
+        if same_dev and same_io and a_stopped and gap_ok:
             # сливаем в текущий кластер
             cur["end_dt"]  = max(cur["end_dt"], a["end_dt"])
             cur["end_ts"]  = max(cur["end_ts"], a["end_ts"])
             cur["end_str"] = cur["end_dt"].strftime(settings.TIME_FMT)
             cur["esp_kmh"] = a.get("esp_kmh", cur.get("esp_kmh"))
-            # объединяем типы
+
+            # объединяем типы груза
             cur_types = set([cur.get("cargo_type", "unknown")])
             cur_types |= set([a.get("cargo_type", "unknown")])
             cur["cargo_type"] = _resolve_cluster_cargo({t for t in cur_types if t})
-            # объединяем IO индексы и события
+
+            # io_indices_set по идее будет из одного индекса, но оставляем как есть
             cur["io_indices_set"] |= a.get("io_indices_set", set())
-            cur["switch_events"] = _dedupe_sw((cur.get("switch_events") or []) + (a.get("switch_events") or []))
+
+            # объединяем switch_events с дедупликацией
+            cur["switch_events"] = _dedupe_sw(
+                (cur.get("switch_events") or []) + (a.get("switch_events") or [])
+            )
         else:
             # завершаем предыдущий кластер и начинаем новый
             clusters.append(cur)
@@ -164,6 +181,7 @@ def _cluster_merge_stationary(norm: list[dict], min_stop_kmh: float, merge_gap_s
         clusters.append(cur)
 
     return clusters
+
 
 def _merge_or_append(loading_intervals, new_interval, epsilon_sec=30):
     """Если в списке уже есть интерес с тем же стартом (±epsilon) и тем же cargo_type — расширяем его конец и события."""
@@ -488,19 +506,21 @@ def find_interests_by_lifting_switches(
                 start_stopped = a.get("start_stopped")
 
                 if not start_stopped:
+                    logger.debug(f"{reg_id}: [GAP ALARM] Not start stopped, continue... ")
                     continue
-
+                logger.debug(a)
                 cargo_key = a.get("cargo_type", "unknown")
                 if cargo_key == "unknown":
+                    logger.warning(f"{reg_id}: [GAP ALARM] Unknown cargo type: {cargo_key}")
                     continue
                 cargo_type_alarm = "Бункер" if cargo_key == "kgo" else "Контейнер"
 
                 delta_last_track_to_alarm_seconds =  (alarm_dt - t_curr).total_seconds()
                 delta_alarm_to_first_track_seconds = (t_next - alarm_dt).total_seconds()
-
+                logger.debug(f"{reg_id}: [ALARM GAP] delta_last_track_to_alarm_seconds - {delta_last_track_to_alarm_seconds}")
                 if delta_last_track_to_alarm_seconds > 30:
                     logger.warning(
-                        f"{reg_id}:[BEFORE] Разрыв {delta_last_track_to_alarm_seconds:.1f}с до аларма {alarm_dt}. "
+                        f"{reg_id}: [GAP] Разрыв {delta_last_track_to_alarm_seconds:.1f}с до аларма {alarm_dt}. "
                         f"Оцениваем время ДО внутри разрыва."
                     )
                     # оценим «последнюю секунду устойчивой остановки» внутри окна (t_curr..alarm_dt)
@@ -511,10 +531,13 @@ def find_interests_by_lifting_switches(
                     lo = t_curr + datetime.timedelta(seconds=eps)
                     hi = alarm_dt - datetime.timedelta(seconds=eps)
 
+
                     if v_prev <= min_stop_speed or a.get("start_stopped"):
-                        t_before_dt = max(lo, alarm_dt - datetime.timedelta(seconds=1))
-                        time_before = t_before_dt.strftime("%Y-%m-%d %H:%M:%S")
-                        logger.debug(f"Кейс 1. Оцененный time_before: {time_before}")
+                        #t_before_dt = max(lo, alarm_dt - datetime.timedelta(seconds=1))
+                        #time_before = t_before_dt.strftime("%Y-%m-%d %H:%M:%S")
+                        #logger.debug(f"Кейс 1. Оцененный time_before: {time_before}")
+                        time_before = alarm_dt - datetime.timedelta(seconds=30)
+                        time_before = time_before.strftime(settings.TIME_FMT)
                     else:
                         # кейс 2: на последнем треке мы НЕ стояли → пробуем обычный поиск по времени (он уже устойчив к дыркам)
                         time_before = find_first_stable_stop(
@@ -529,6 +552,7 @@ def find_interests_by_lifting_switches(
                     logger.warning(
                         f"{reg_id}:[AFTER] Пропуск поиска движения — первый трек после разрыва ({t_next}) опережает момент срабатывания ({alarm_dt}) на {delta_alarm_to_first_track_seconds:.1f}с. Используем физическую оценку."
                     )
+                    '''
                     v1_kmh = float(next_track.get("sp") or 0)
                     t_move = estimate_move_start_kmhps(
                         t0=t_curr,
@@ -542,12 +566,15 @@ def find_interests_by_lifting_switches(
                     )
                     time_after = t_move.strftime("%Y-%m-%d %H:%M:%S")
                     logger.info(f"Оцененный time_after: {time_after}")
+                    '''
+                    time_after = alarm_dt + datetime.timedelta(seconds=120)
+                    time_after = time_after.strftime(settings.TIME_FMT)
                 else:
                     time_after, last_stop_idx = find_stop_after_lifting(tracks, i + 1, settings, logger, reg_id)
 
 
                 # Сдвиг фото ПОСЛЕ
-                raw_time_after = datetime.datetime.strptime(time_after, "%Y-%m-%d %H:%M:%S")
+                raw_time_after = datetime.datetime.strptime(time_after, settings.TIME_FMT)
                 adjusted_time_after = raw_time_after - datetime.timedelta(
                     seconds=settings.config.getint("Interests", "PHOTO_AFTER_SHIFT_SEC"))
                 time_after_adj = adjusted_time_after.strftime("%Y-%m-%d %H:%M:%S")
@@ -925,7 +952,9 @@ def find_stop_after_lifting(tracks, start_idx, settings, logger=None, reg_id=Non
         i += 1
 
     logger.warning(f"{reg_id}: [PHOTO AFTER] Не удалось подтвердить движение после lifting (start_idx={start_idx})")
-    return None, None
+    return ts(start_idx).strftime(settings.TIME_FMT), start_idx
+
+    #return None, None
 
 
 def fallback_photo_after_time(tracks, last_switch_index, settings, logger=None):
@@ -951,12 +980,6 @@ def fallback_photo_after_time(tracks, last_switch_index, settings, logger=None):
             f"[AFTER-FALLBACK] Не прошло достаточно времени с момента срабатывания ({last_switch_time}), интерес отклонён"
         )
     return None
-
-import datetime
-import logging
-from bisect import bisect_left
-
-logger = logging.getLogger("qt_pvp.logger")
 
 def find_first_stable_stop(
     tracks,
