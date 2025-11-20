@@ -823,7 +823,6 @@ def find_stop_after_lifting(tracks, start_idx, settings, logger=None, reg_id=Non
       - Подтверждаем движение по двум (и более) "move"-точкам с проверкой реальной длительности между ними.
       - Внутри разрыва оцениваем t_move через estimate_move_start_kmhps(...).
     """
-    import datetime
 
     if logger is None:
         class _N:

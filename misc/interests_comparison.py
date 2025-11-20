@@ -63,26 +63,36 @@ def fuzzy_equal(n1: str, n2: str, eps_sec: int = 10) -> bool:
         abs((e1 - e2).total_seconds()) <= eps_sec
     )
 
-def diff_sets(expected: Set[str], detected: Set[str], eps_sec: int = 0) -> Tuple[Set[str], Set[str]]:
-    """Возвращает (new, missing). Если eps_sec>0 — делаем фаззи-сверку и исключаем «почти совпадающие»."""
+def diff_sets(expected: Set[str], detected: Set[str], eps_sec: int = 0):
     new = set(detected)
     missing = set(expected)
     if eps_sec <= 0:
         return new - expected, missing - detected
 
-    # фаззи: вычитаем пары, которые «почти совпадают»
     matched_exp = set()
     matched_det = set()
+
     for e in expected:
         for d in detected:
             if d in matched_det:
                 continue
-            if fuzzy_equal(e, d, eps_sec=eps_sec):
-                matched_exp.add(e); matched_det.add(d)
+
+            # 1) сначала точное совпадение строкой — вообще без дат
+            if e == d:
+                matched_exp.add(e)
+                matched_det.add(d)
                 break
+
+            # 2) затем уже фаззи через парсинг
+            if fuzzy_equal(e, d, eps_sec=eps_sec):
+                matched_exp.add(e)
+                matched_det.add(d)
+                break
+
     new -= matched_det
     missing -= matched_exp
     return new, missing
+
 
 async def main(day_str = DAY_STR, reg_id = REG_ID):
     print(f"\nWorking with day {day_str}")
@@ -120,7 +130,7 @@ async def main(day_str = DAY_STR, reg_id = REG_ID):
     expected_names = set(folder_names)
 
     # 4) Сравнение: сначала строгая, затем фаззи (±10с)
-    new_strict, missing_strict = diff_sets(expected_names, detected_names, eps_sec=0)
+    #new_strict, missing_strict = diff_sets(expected_names, detected_names, eps_sec=0)
     new_fuzzy,  missing_fuzzy  = diff_sets(expected_names, detected_names, eps_sec=30)
 
     #print("=== STRICT ===")
@@ -137,7 +147,7 @@ async def main(day_str = DAY_STR, reg_id = REG_ID):
 
 if __name__ == "__main__":
     for day in [
-        "2025.11.18",
+        "2025.11.19",
         #"2025.10.20"
     ]:
         #day = "2025.08.17"
