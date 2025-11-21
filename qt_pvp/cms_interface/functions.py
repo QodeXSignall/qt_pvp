@@ -571,7 +571,9 @@ def find_interests_by_lifting_switches(
                     time_after = time_after.strftime(settings.TIME_FMT)
                 else:
                     time_after, last_stop_idx = find_stop_after_lifting(tracks, i + 1, settings, logger, reg_id)
-
+                    if not time_after:
+                        time_after = tracks[i + 1].get("gt")
+                        last_stop_idx = i + 1
 
                 # Сдвиг фото ПОСЛЕ
                 raw_time_after = datetime.datetime.strptime(time_after, settings.TIME_FMT)
@@ -951,9 +953,9 @@ def find_stop_after_lifting(tracks, start_idx, settings, logger=None, reg_id=Non
         i += 1
 
     logger.warning(f"{reg_id}: [PHOTO AFTER] Не удалось подтвердить движение после lifting (start_idx={start_idx})")
-    return ts(start_idx).strftime(settings.TIME_FMT), start_idx
+    #return ts(start_idx).strftime(settings.TIME_FMT), start_idx
 
-    #return None, None
+    return None, None
 
 
 def fallback_photo_after_time(tracks, last_switch_index, settings, logger=None):

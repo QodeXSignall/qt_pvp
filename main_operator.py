@@ -152,6 +152,7 @@ class Main:
         if pending:
             interests = pending
             logger.info(f"{reg_id}: Берём {len(interests)} интерес(а/ов) из очереди pending_interests.")
+            logger.debug(f"({interests})")
         else:
             # Если очередь пуста и проверка давности не прошла — делать лишних запросов не будем
             logger.info(f"{reg_id}: Очередь pending_interests пуста, и наполнять сейчас рано — завершаем.")
