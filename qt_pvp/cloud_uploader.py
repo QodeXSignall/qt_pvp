@@ -54,7 +54,7 @@ async def aupload_dict_as_json_to_cloud(data: dict,
 
 
 def upload_bytes_to_cloud(client, data: bytes, remote_path: str, content_type: str = "application/octet-stream",
-                          retries: int = 4, base_delay: float = 0.8) -> bool:
+                          retries: int = 5, base_delay: float = 0.8) -> bool:
     """
     Сырая загрузка байт через HTTP PUT (минуя локальные файлы).
     Использует настройки и сессию webdav3-клиента.

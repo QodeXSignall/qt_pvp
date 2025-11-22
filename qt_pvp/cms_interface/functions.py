@@ -469,7 +469,6 @@ def find_interests_by_lifting_switches(
         if i + 1 >= len(tracks):
             break
         track = tracks[i]
-        #print(track)
         next_track = tracks[i + 1]
         cur_speed = int(track.get("sp") or 0)
         t_curr_dt = track.get("gt")  # строка (для логов)
