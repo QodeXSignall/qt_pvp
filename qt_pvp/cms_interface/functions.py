@@ -655,7 +655,7 @@ def find_interests_by_lifting_switches(
                     logger.warning(f"{reg_id}: [BEFORE] Это был первый интерес, возвращаемся для получения дополнительных треков")
                     return {"error": "No stop before switch found for first interest"}
                 else:
-                    time_after = current_dt - datetime.timedelta(seconds=120)
+                    time_before = current_dt - datetime.timedelta(seconds=120)
 
             lifting_end_idx = i
             last_switch_index = i
