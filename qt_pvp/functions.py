@@ -371,6 +371,35 @@ def save_new_reg_last_upload_time(reg_id: str, timestamp: str):
             logger.debug(f"{reg_id}. Пропуск обновления last_upload_time (новое {timestamp} <= текущее {cur_str}).")
 
 
+def _interest_name_to_interval(name: str) -> tuple[str, datetime.datetime, datetime.datetime]:
+    """
+    A939CA702_2025.11.23 07.10.16-07.14.19  ->  (plate, start_dt, end_dt)
+    """
+    plate, date_str, start_str, end_str = parse_interest_name(name)
+    # Формат имени интереса: YYYY.MM.DD HH.MM.SS
+    interest_fmt = "%Y.%m.%d %H.%M.%S"
+
+    start_dt = datetime.datetime.strptime(f"{date_str} {start_str}", interest_fmt)
+    end_dt   = datetime.datetime.strptime(f"{date_str} {end_str}",   interest_fmt)
+
+    return plate, start_dt, end_dt
+
+
+def exact_diff_sets(expected: set[str], detected: set[str]) -> tuple[set[str], set[str]]:
+    """
+    exact comparison:
+      expected — имена, которые уже есть на WebDAV
+      detected — имена, которые новый алгоритм видит сейчас
+
+    Возвращает:
+      new_exact     — новые интересы (detected - expected)
+      missing_exact — лишние интересы (expected - detected)
+    """
+    new_exact = detected - expected
+    missing_exact = expected - detected
+    return new_exact, missing_exact
+
+
 def video_remover_cycle():
     while True:
         all_videos = get_all_files(settings.INTERESTING_VIDEOS_FOLDER)

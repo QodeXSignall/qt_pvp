@@ -1,5 +1,6 @@
 from qt_pvp.interest_merge_funcs import merge_overlapping_interests
 from qt_pvp.cms_interface import functions as cms_api_funcs
+from qt_pvp.functions import parse_interest_name
 from qt_pvp.qt_rm_client import QTRMAsyncClient
 from qt_pvp import functions as main_funcs
 from qt_pvp.cms_interface import cms_http
@@ -14,6 +15,8 @@ import datetime
 import asyncio
 import shutil
 import os
+
+
 
 
 class Main:
@@ -39,6 +42,120 @@ class Main:
             sem = asyncio.Semaphore(settings.config.getint("Process", "MAX_INTERESTS_PER_DEVICE"))
             self._per_device_sem[reg_id] = sem
         return sem
+
+    async def _sync_recheck_with_cloud(
+        self,
+        reg_id: str,
+        recheck_interests: list[dict],
+        st: str,
+        en: str,
+        time_fmt: str,
+    ) -> None:
+        """
+        Сравнивает интересы, найденные при recheck, с тем, что уже лежит на WebDAV:
+
+          - берём интересы на облаке в окне [st, en]
+          - фаззи-сравниваем их с recheck_interests
+          - новые (detected, которых нет на облаке) -> append_pending_interests
+          - устаревшие (на облаке, но нет в detected) -> удаляем с облака
+        """
+
+        if not recheck_interests:
+            return
+
+        # Окно для recheck
+        try:
+            window_start = datetime.datetime.strptime(st, time_fmt)
+            window_end = datetime.datetime.strptime(en, time_fmt)
+        except Exception as e:
+            logger.warning(f"{reg_id}: Не удалось распарсить окно recheck [{st} → {en}]: {e}")
+            return
+
+        # Пытаемся достать plate. Надёжнее всего — из имени интереса.
+        plate = None
+        for it in recheck_interests:
+            nm = (it or {}).get("name")
+            if not nm:
+                continue
+            try:
+                p, _, _ = main_funcs._interest_name_to_interval(nm)
+                plate = p
+                break
+            except Exception:
+                continue
+
+        if not plate:
+            # fallback: пробуем из states.json
+            reg_cfg = main_funcs.get_reg_info(reg_id)
+            plate = (reg_cfg or {}).get("plate")
+
+        if not plate:
+            logger.warning(f"{reg_id}: Не удалось определить plate для recheck-синхронизации. Пропускаем.")
+            return
+
+        client = cloud_uploader.client
+
+        # Собираем имена интересов на облаке, которые попадают в окно [window_start, window_end]
+        expected_names: set[str] = set()
+
+        # С небольшим запасом по датам, чтобы не откусить края
+        day = window_start.date()
+        last_day = window_end.date()
+        margin_sec = 120  # запас по секундам при отборе интересов по окну
+
+        while day <= last_day:
+            day_str = day.strftime("%Y.%m.%d")
+            cloud_names = cloud_uploader._list_cloud_interest_folders_for_day(client, plate, day_str)
+            for name in cloud_names:
+                try:
+                    _, s_dt, e_dt = main_funcs._interest_name_to_interval(name)
+                except Exception:
+                    continue
+                # отсекаем интересы, которые явно вне окна recheck, с запасом
+                if e_dt < (window_start - datetime.timedelta(seconds=margin_sec)):
+                    continue
+                if s_dt > (window_end + datetime.timedelta(seconds=margin_sec)):
+                    continue
+                expected_names.add(name)
+            day += datetime.timedelta(days=1)
+
+        detected_names: set[str] = set()
+        for it in recheck_interests:
+            nm = (it or {}).get("name")
+            if nm:
+                detected_names.add(nm)
+
+        new_exact, missing_exact = main_funcs.exact_diff_sets(expected_names, detected_names)
+
+        # 2. Новые интересы → в pending_interests
+        if new_exact:
+            to_append = [it for it in recheck_interests if it.get("name") in new_exact]
+            if to_append:
+                logger.info(
+                    f"{reg_id}: RECHECK: обнаружено {len(to_append)} новых интересов по сравнению с WebDAV "
+                    f"(будут добавлены в pending_interests)."
+                )
+                main_funcs.append_pending_interests(reg_id, to_append)
+
+        # 3. Устаревшие интересы → удалить с облака
+        for name in sorted(missing_exact):
+            try:
+                plate2, s_dt, _ = main_funcs._interest_name_to_interval(name)
+            except Exception:
+                logger.warning(f"{reg_id}: RECHECK: не удалось распарсить имя устаревшего интереса '{name}' — пропуск.")
+                continue
+
+            day_str = s_dt.strftime("%Y.%m.%d")
+            folder_path = f"{settings.CLOUD_PATH}/{plate2}/{day_str}/{name}"
+
+            try:
+                logger.info(f"{reg_id}: RECHECK: удаляем устаревший интерес с WebDAV: {folder_path}")
+                client.clean(folder_path)
+            except cloud_uploader.RemoteResourceNotFound:
+                logger.info(f"{reg_id}: RECHECK: папка интереса уже отсутствует: {folder_path}")
+            except Exception as e:
+                logger.error(f"{reg_id}: RECHECK: ошибка при удалении интереса '{name}' из WebDAV: {e}")
+
 
     async def get_devices_online(self):
         devices_online = await cms_api.get_online_devices(self.jsession)
@@ -478,16 +595,18 @@ class Main:
         """
         Пополняет очередь pending_interests для reg_id двумя способами:
 
-        1) "Обычный" forward-проход (как раньше):
+        1) "Обычный" forward-проход:
            - если сейчас > last_upload_time + 600 сек:
              - догоняем интервал [last_upload_time → now] посуточно,
                обновляя last_upload_time по мере продвижения.
 
-        2) Новый recheck-проход по "верифицированному" интервалу:
+        2) Recheck-проход по "верифицированному" интервалу:
            - берём verified_until (если его нет — используем last_upload_time),
            - если прошло >= VERIFIED_RECHECK_HOURS часов,
-             ещё раз проверяем интервал [verified_until → now]
-             и досовываем новые интересы в pending_interests.
+             ещё раз проверяем интервал [verified_until → now],
+             СРАВНИВАЕМ с WebDAV и:
+               * новые интересы -> в pending_interests
+               * старые (больше не найденные) -> удаляем с облака.
 
         Ограничение глубины по дням (MAX_LOOKBACK_DAYS) применяется и к last_upload_time,
         и к verified_until, чтобы не уходить слишком далеко в прошлое.
@@ -503,13 +622,13 @@ class Main:
             # --- last_upload_time (как раньше) ---
             last_up_str = reg_info.get("last_upload_time")
             if not last_up_str:
-                # как и раньше: если ничего нет — считаем 7 дней назад
+                # если ничего нет — считаем 7 дней назад
                 last_up_str = (datetime.datetime.now() - datetime.timedelta(days=7)).strftime(TIME_FMT)
             last_up = datetime.datetime.strptime(last_up_str, TIME_FMT)
 
             now = datetime.datetime.now()
 
-            # --- новый verified_until ---
+            # --- verified_until ---
             verified_str = reg_info.get("verified_until") or last_up_str
             try:
                 verified_dt = datetime.datetime.strptime(verified_str, TIME_FMT)
@@ -521,20 +640,17 @@ class Main:
                 verified_dt = last_up
 
             # --- флаги "пора ли что-то делать" ---
-            # forward-проход — как был: не чаще, чем раз в 600 секунд
             forward_due = (now - last_up).total_seconds() >= 600
 
-            # recheck-проход — раз в N часов (Interests.VERIFIED_RECHECK_HOURS, по умолчанию 6)
             recheck_hours = settings.config.getint("Interests", "VERIFIED_RECHECK_HOURS", fallback=6)
             recheck_due = False
             if recheck_hours > 0:
                 recheck_due = (now - verified_dt).total_seconds() >= recheck_hours * 3600
 
             if not forward_due and not recheck_due:
-                # ни обычная догонка, ни recheck ещё не нужны
                 return
 
-            # --- ограничение глубины по дням (и для last_up, и для verified_dt) ---
+            # --- ограничение глубины по дням ---
             max_lookback_days = settings.config.getint("Interests", "MAX_LOOKBACK_DAYS", fallback=0)
             if max_lookback_days > 0:
                 earliest_allowed = now - datetime.timedelta(days=max_lookback_days)
@@ -577,10 +693,8 @@ class Main:
                     if interests:
                         interests = merge_overlapping_interests(interests)
                         collected.extend(interests)
-                        # двигаем "фактический" конец до конца последнего интереса
                         en = max(interest["end_time"] for interest in interests)
 
-                    # после закрытия дня двигаем last_upload_time до конца дня (как и раньше)
                     main_funcs.save_new_reg_last_upload_time(reg_id, en)
                     cur = en_dt + datetime.timedelta(seconds=1)
 
@@ -607,20 +721,28 @@ class Main:
                 )
 
                 reg_cfg = main_funcs.get_reg_info(reg_id) or main_funcs.create_new_reg(reg_id, plate=None)
-                interests = await self.get_interests_async(reg_id, reg_cfg, st, en)
-                if interests:
-                    interests = merge_overlapping_interests(interests)
-                    collected.extend(interests)
+                recheck_interests = await self.get_interests_async(reg_id, reg_cfg, st, en)
+                if recheck_interests:
+                    recheck_interests = merge_overlapping_interests(recheck_interests)
+                    # ВАЖНО: не добавляем их в collected, а синхронизируем с облаком
+                    await self._sync_recheck_with_cloud(
+                        reg_id=reg_id,
+                        recheck_interests=recheck_interests,
+                        st=st,
+                        en=en,
+                        time_fmt=TIME_FMT,
+                    )
 
-                # зафиксировали, что этот интервал проверен
+                # фиксируем, что этот интервал проверен
                 main_funcs.save_reg_verified_until(reg_id, en)
 
-            # --- записываем всё, что накопили, в pending_interests (с дедупом по имени) ---
+            # --- forward-результат пишем в pending_interests (с дедупом по имени) ---
             if collected:
                 main_funcs.append_pending_interests(reg_id, collected)
 
         finally:
             self._interest_refill_in_progress.discard(reg_id)
+
 
 
 async def _run():

@@ -1,3 +1,4 @@
+from webdav3.exceptions import RemoteResourceNotFound
 from qt_pvp.meta_cache import meta_cache
 from webdav3.client import Client
 from qt_pvp.logger import logger
@@ -51,6 +52,27 @@ async def aupload_dict_as_json_to_cloud(data: dict,
     except Exception as e:
         logger.error(f"[JSON-UPLOAD] Ошибка выгрузки {filename} в {remote_folder_path}: {e}")
         return False
+
+def _list_cloud_interest_folders_for_day(client, plate: str, day_str: str) -> list[str]:
+    """
+    Возвращает список имён интересов (папок) на WebDAV для заданного госномера и дня.
+    Путь: {CLOUD_BASE_PATH}/{plate}/{day_str}/<interest_name>/
+    """
+    day_path = f"{settings.CLOUD_PATH}/{plate}/{day_str}"
+    try:
+        items = client.list(day_path)
+    except RemoteResourceNotFound:
+        return []
+    except Exception as e:
+        logger.warning(f"[WEBDAV] Ошибка при list('{day_path}'): {e}")
+        return []
+
+    names: list[str] = []
+    for item in items:
+        name = item.rstrip("/").split("/")[-1]
+        if "_" in name and "-" in name and "." in name:
+            names.append(name)
+    return sorted(names)
 
 
 def upload_bytes_to_cloud(client, data: bytes, remote_path: str, content_type: str = "application/octet-stream",

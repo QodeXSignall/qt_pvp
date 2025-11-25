@@ -147,7 +147,7 @@ async def main(day_str = DAY_STR, reg_id = REG_ID):
 
 if __name__ == "__main__":
     for day in [
-        "2025.11.22",
+        "2025.11.23",
         #"2025.10.20"
     ]:
         #day = "2025.08.17"
