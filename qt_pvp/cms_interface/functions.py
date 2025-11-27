@@ -656,6 +656,7 @@ def find_interests_by_lifting_switches(
                     return {"error": "No stop before switch found for first interest"}
                 else:
                     time_before = current_dt - datetime.timedelta(seconds=120)
+                    time_before = time_before.strftime(settings.TIME_FMT)
 
             lifting_end_idx = i
             last_switch_index = i
