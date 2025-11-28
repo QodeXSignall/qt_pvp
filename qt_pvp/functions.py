@@ -26,6 +26,8 @@ def _default_new_reg_info(plate=None):
         "last_upload_time": last_upload_str,
         # новая служебная метка: до какого момента мы уже делали "проверочный" проход
         "verified_until": last_upload_str,
+        # длинный recheck раз в сутки
+        "verified_until_long": last_upload_str,
         "by_trigger": 1,
         "by_stops": 0,
         "by_door_limit_switch": 0,
@@ -199,6 +201,14 @@ def _ensure_alarms_fields(regs: dict, reg_id: str = None) -> bool:
         if "euro_container_alarm" not in reg:
             reg["euro_container_alarm"] = 4
             changed = True
+        if "verified_until_long" not in reg:
+            vt = reg.get("verified_until")
+            if vt:
+                reg["verified_until_long"] = vt
+            else:
+                last_upload = datetime.datetime.today() - datetime.timedelta(days=7)
+                reg["verified_until_long"] = last_upload.strftime("%Y-%m-%d %H:%M:%S")
+            changed = True
         regs[rid] = reg
     return changed
 
@@ -338,6 +348,58 @@ def save_reg_verified_until(reg_id: str, timestamp: str):
         else:
             logger.debug(
                 f"{reg_id}. Пропуск обновления verified_until "
+                f"(новое {timestamp} < текущее {cur_str})."
+            )
+
+
+def save_reg_verified_until_long(reg_id: str, timestamp: str):
+    """
+    Аналог save_reg_verified_until, но для «длинного» recheck.
+    Дополнительно гарантирует, что verified_until_long >= verified_until.
+    """
+    try:
+        new_dt = datetime.datetime.strptime(timestamp, settings.TIME_FMT)
+    except Exception:
+        logger.warning(f"{reg_id}. Некорректный формат verified_until_long: {timestamp} — игнор.")
+        return
+
+    with FileLock(LOCK_PATH):
+        states = _load_states()
+        regs = states.setdefault("regs", {})
+        reg = regs.setdefault(reg_id, _default_new_reg_info())
+        ensure_alarms_structure_inplace(regs, reg_id)
+
+        short_str = reg.get("verified_until")
+        short_dt = None
+        if short_str:
+            try:
+                short_dt = datetime.datetime.strptime(short_str, settings.TIME_FMT)
+            except Exception:
+                short_dt = None
+
+        if short_dt and new_dt < short_dt:
+            logger.info(
+                f"{reg_id}. verified_until_long ({timestamp}) не может быть раньше verified_until ({short_str}). "
+                f"Подставляем verified_until."
+            )
+            new_dt = short_dt
+            timestamp = short_str
+
+        cur_str = reg.get("verified_until_long")
+        cur_dt = None
+        if cur_str:
+            try:
+                cur_dt = datetime.datetime.strptime(cur_str, settings.TIME_FMT)
+            except Exception:
+                pass
+
+        if cur_dt is None or new_dt >= cur_dt:
+            reg["verified_until_long"] = timestamp
+            _atomic_save_states(states)
+            logger.info(f"{reg_id}. Обновлен `verified_until_long`: {timestamp}")
+        else:
+            logger.debug(
+                f"{reg_id}. Пропуск обновления verified_until_long "
                 f"(новое {timestamp} < текущее {cur_str})."
             )
 

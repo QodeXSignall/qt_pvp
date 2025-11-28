@@ -17,8 +17,6 @@ import shutil
 import os
 
 
-
-
 class Main:
     def __init__(self, output_format="mp4"):
         #threading.Thread(target=main_funcs.video_remover_cycle).start()
@@ -129,7 +127,16 @@ class Main:
 
         # 2. Новые интересы → в pending_interests
         if new_exact:
-            to_append = [it for it in recheck_interests if it.get("name") in new_exact]
+            raw_to_append = [it for it in recheck_interests if it.get("name") in new_exact]
+            to_append: list[dict] = []
+            for it in raw_to_append:
+                name = it.get("name")
+                if not name:
+                    continue
+                if await self._interest_exists_in_cloud(name):
+                    logger.info(f"{reg_id}: RECHECK: {name} уже есть в облаке, пропускаем добавление в pending.")
+                    continue
+                to_append.append(it)
             if to_append:
                 logger.info(
                     f"{reg_id}: RECHECK: обнаружено {len(to_append)} новых интересов по сравнению с WebDAV "
@@ -155,6 +162,23 @@ class Main:
                 logger.info(f"{reg_id}: RECHECK: папка интереса уже отсутствует: {folder_path}")
             except Exception as e:
                 logger.error(f"{reg_id}: RECHECK: ошибка при удалении интереса '{name}' из WebDAV: {e}")
+
+
+    async def _interest_exists_in_cloud(self, interest_name: str) -> bool:
+        """
+        Осторожно проверяет наличие папки интереса в облаке с кэшем WebDAV.
+        """
+        try:
+            _, _, folder_path = cloud_uploader.get_interest_folder_path(interest_name, settings.CLOUD_PATH)
+        except Exception as e:
+            logger.warning(f"Не удалось получить путь интереса '{interest_name}' для проверки на облаке: {e}")
+            return False
+
+        try:
+            return await cloud_uploader.cached_check(cloud_uploader.client, folder_path)
+        except Exception as e:
+            logger.warning(f"[WEBDAV] Ошибка cached_check для '{folder_path}': {e}")
+            return False
 
 
     async def get_devices_online(self):
@@ -641,6 +665,23 @@ class Main:
                 )
                 verified_dt = last_up
 
+            verified_long_str = reg_info.get("verified_until_long") or verified_str
+            try:
+                verified_long_dt = datetime.datetime.strptime(verified_long_str, TIME_FMT)
+            except Exception:
+                logger.warning(
+                    f"{reg_id}: Некорректный verified_until_long='{verified_long_str}', "
+                    f"сбрасываем к verified_until={verified_str}."
+                )
+                verified_long_dt = verified_dt
+
+            if verified_long_dt < verified_dt:
+                logger.info(
+                    f"{reg_id}: verified_until_long ({verified_long_dt}) позади verified_until ({verified_dt}). "
+                    f"Выравниваем."
+                )
+                verified_long_dt = verified_dt
+
             # --- флаги "пора ли что-то делать" ---
             forward_due = (now - last_up).total_seconds() >= 600
 
@@ -649,7 +690,12 @@ class Main:
             if recheck_hours > 0:
                 recheck_due = (now - verified_dt).total_seconds() >= recheck_hours * 3600
 
-            if not forward_due and not recheck_due:
+            recheck_long_hours = settings.config.getint("Interests", "VERIFIED_RECHECK_HOURS_LONG", fallback=24)
+            long_recheck_due = False
+            if recheck_long_hours > 0:
+                long_recheck_due = (now - verified_long_dt).total_seconds() >= recheck_long_hours * 3600
+
+            if not forward_due and not recheck_due and not long_recheck_due:
                 return
 
             # --- ограничение глубины по дням ---
@@ -670,6 +716,16 @@ class Main:
                         f"{max_lookback_days}d → подрезаем до {earliest_allowed.strftime(TIME_FMT)}."
                     )
                     verified_dt = earliest_allowed
+
+                if verified_long_dt < earliest_allowed:
+                    logger.info(
+                        f"{reg_id}: verified_until_long={verified_long_dt.strftime(TIME_FMT)} старее окна "
+                        f"{max_lookback_days}d → подрезаем до {earliest_allowed.strftime(TIME_FMT)}."
+                    )
+                    verified_long_dt = earliest_allowed
+
+            if verified_long_dt < verified_dt:
+                verified_long_dt = verified_dt
 
             collected: list[dict] = []
 
@@ -737,6 +793,44 @@ class Main:
 
                 # фиксируем, что этот интервал проверен
                 main_funcs.save_reg_verified_until(reg_id, en)
+                try:
+                    verified_dt = datetime.datetime.strptime(en, TIME_FMT)
+                except Exception:
+                    pass
+
+            if long_recheck_due:
+                window_start = max(
+                    verified_long_dt,
+                    verified_dt,
+                    now - datetime.timedelta(hours=recheck_long_hours),
+                )
+                st_long = window_start.strftime(TIME_FMT)
+                en_long = now.strftime(TIME_FMT)
+
+                logger.info(
+                    f"{reg_id}: DAILY RECHECK интервала [{st_long} → {en_long}] "
+                    f"после паузы {recheck_long_hours}ч."
+                )
+
+                reg_cfg = main_funcs.get_reg_info(reg_id) or main_funcs.create_new_reg(reg_id, plate=None)
+                long_recheck_interests = await self.get_interests_async(reg_id, reg_cfg, st_long, en_long)
+                if long_recheck_interests:
+                    long_recheck_interests = merge_overlapping_interests(long_recheck_interests)
+                    await self._sync_recheck_with_cloud(
+                        reg_id=reg_id,
+                        recheck_interests=long_recheck_interests,
+                        st=st_long,
+                        en=en_long,
+                        time_fmt=TIME_FMT,
+                    )
+
+                main_funcs.save_reg_verified_until_long(reg_id, en_long)
+                try:
+                    verified_long_dt = datetime.datetime.strptime(en_long, TIME_FMT)
+                except Exception:
+                    pass
+                if verified_long_dt < verified_dt:
+                    verified_long_dt = verified_dt
 
             # --- forward-результат пишем в pending_interests (с дедупом по имени) ---
             if collected:
