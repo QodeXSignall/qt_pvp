@@ -675,10 +675,10 @@ class Main:
                 )
                 verified_long_dt = verified_dt
 
-            if verified_long_dt < verified_dt:
+            if verified_long_dt > verified_dt:
                 logger.info(
-                    f"{reg_id}: verified_until_long ({verified_long_dt}) позади verified_until ({verified_dt}). "
-                    f"Выравниваем."
+                    f"{reg_id}: verified_until_long ({verified_long_dt}) впереди verified_until ({verified_dt}). "
+                    f"Смещаем назад."
                 )
                 verified_long_dt = verified_dt
 
@@ -692,7 +692,7 @@ class Main:
 
             recheck_long_hours = settings.config.getint("Interests", "VERIFIED_RECHECK_HOURS_LONG", fallback=24)
             long_recheck_due = False
-            if recheck_long_hours > 0:
+            if recheck_long_hours > 0 and verified_long_dt < verified_dt:
                 long_recheck_due = (now - verified_long_dt).total_seconds() >= recheck_long_hours * 3600
 
             if not forward_due and not recheck_due and not long_recheck_due:
@@ -724,7 +724,7 @@ class Main:
                     )
                     verified_long_dt = earliest_allowed
 
-            if verified_long_dt < verified_dt:
+            if verified_long_dt > verified_dt:
                 verified_long_dt = verified_dt
 
             collected: list[dict] = []
@@ -799,38 +799,32 @@ class Main:
                     pass
 
             if long_recheck_due:
-                window_start = max(
-                    verified_long_dt,
-                    verified_dt,
-                    now - datetime.timedelta(hours=recheck_long_hours),
-                )
-                st_long = window_start.strftime(TIME_FMT)
-                en_long = now.strftime(TIME_FMT)
+                st_long = verified_long_dt.strftime(TIME_FMT)
+                en_long = verified_dt.strftime(TIME_FMT)
 
-                logger.info(
-                    f"{reg_id}: DAILY RECHECK интервала [{st_long} → {en_long}] "
-                    f"после паузы {recheck_long_hours}ч."
-                )
-
-                reg_cfg = main_funcs.get_reg_info(reg_id) or main_funcs.create_new_reg(reg_id, plate=None)
-                long_recheck_interests = await self.get_interests_async(reg_id, reg_cfg, st_long, en_long)
-                if long_recheck_interests:
-                    long_recheck_interests = merge_overlapping_interests(long_recheck_interests)
-                    await self._sync_recheck_with_cloud(
-                        reg_id=reg_id,
-                        recheck_interests=long_recheck_interests,
-                        st=st_long,
-                        en=en_long,
-                        time_fmt=TIME_FMT,
+                if st_long != en_long:
+                    logger.info(
+                        f"{reg_id}: DAILY RECHECK интервала [{st_long} → {en_long}] "
+                        f"после паузы {recheck_long_hours}ч."
                     )
 
-                main_funcs.save_reg_verified_until_long(reg_id, en_long)
-                try:
-                    verified_long_dt = datetime.datetime.strptime(en_long, TIME_FMT)
-                except Exception:
-                    pass
-                if verified_long_dt < verified_dt:
-                    verified_long_dt = verified_dt
+                    reg_cfg = main_funcs.get_reg_info(reg_id) or main_funcs.create_new_reg(reg_id, plate=None)
+                    long_recheck_interests = await self.get_interests_async(reg_id, reg_cfg, st_long, en_long)
+                    if long_recheck_interests:
+                        long_recheck_interests = merge_overlapping_interests(long_recheck_interests)
+                        await self._sync_recheck_with_cloud(
+                            reg_id=reg_id,
+                            recheck_interests=long_recheck_interests,
+                            st=st_long,
+                            en=en_long,
+                            time_fmt=TIME_FMT,
+                        )
+
+                    main_funcs.save_reg_verified_until_long(reg_id, en_long)
+                    try:
+                        verified_long_dt = datetime.datetime.strptime(en_long, TIME_FMT)
+                    except Exception:
+                        pass
 
             # --- forward-результат пишем в pending_interests (с дедупом по имени) ---
             if collected:

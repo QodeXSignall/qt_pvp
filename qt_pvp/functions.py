@@ -354,8 +354,8 @@ def save_reg_verified_until(reg_id: str, timestamp: str):
 
 def save_reg_verified_until_long(reg_id: str, timestamp: str):
     """
-    Аналог save_reg_verified_until, но для «длинного» recheck.
-    Дополнительно гарантирует, что verified_until_long >= verified_until.
+    Аналог save_reg_verified_until, но verified_until_long не должен убегать
+    вперёд verified_until, чтобы окна recheck не пересекались.
     """
     try:
         new_dt = datetime.datetime.strptime(timestamp, settings.TIME_FMT)
@@ -377,10 +377,10 @@ def save_reg_verified_until_long(reg_id: str, timestamp: str):
             except Exception:
                 short_dt = None
 
-        if short_dt and new_dt < short_dt:
+        if short_dt and new_dt > short_dt:
             logger.info(
-                f"{reg_id}. verified_until_long ({timestamp}) не может быть раньше verified_until ({short_str}). "
-                f"Подставляем verified_until."
+                f"{reg_id}. verified_until_long ({timestamp}) не может быть позже verified_until ({short_str}). "
+                f"Используем verified_until."
             )
             new_dt = short_dt
             timestamp = short_str
