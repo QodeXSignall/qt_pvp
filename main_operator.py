@@ -407,6 +407,7 @@ class Main:
             # 5) если надо — выгружаем «полный» клип в облако (только для chanel_id)
             full_clip_upload_status = False
             full_clip_path = None
+
             if not interest_video_exists:
                 file_dict = channels_files_dict.get(channel_id)
                 full_clip_path = file_dict["path"]
@@ -438,7 +439,7 @@ class Main:
                 videos_by_channel=channels_paths,
                 keep_channel_id=channel_id if not interest_video_exists else None
             )
-            all_done_ok = bool(ok_frames and (interest_video_exists or full_clip_upload_status))
+            all_done_ok = bool(ok_frames) #and (interest_video_exists or full_clip_upload_status))
 
             if full_clip_path:
                 if full_clip_upload_status:
@@ -487,6 +488,7 @@ class Main:
         return interest["end_time"]
 
     def del_pending_interest(self, reg_id, interest_name):
+        logger.info(f"{reg_id}: Удаляем pending interest: {interest_name}")
         try:
             main_funcs.remove_pending_interest(reg_id, interest_name)
         except Exception as e:
