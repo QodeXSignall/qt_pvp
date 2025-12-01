@@ -479,7 +479,7 @@ class Main:
                     asyncio.create_task(
                         self.qt_rm_client.recognize_webdav(interest_name=interest_name)
                     )
-                    self.del_pending_interest(reg_id, interest_name)
+                self.del_pending_interest(reg_id, interest_name)
                 total_src_removed = 0
                 for ch, info in channels_info.items():
                     sources = (info or {}).get("concat_sources") or []
@@ -675,13 +675,6 @@ class Main:
                 )
                 verified_long_dt = verified_dt
 
-            if verified_long_dt > verified_dt:
-                logger.info(
-                    f"{reg_id}: verified_until_long ({verified_long_dt}) впереди verified_until ({verified_dt}). "
-                    f"Смещаем назад."
-                )
-                verified_long_dt = verified_dt
-
             # --- флаги "пора ли что-то делать" ---
             forward_due = (now - last_up).total_seconds() >= 600
 
@@ -692,7 +685,7 @@ class Main:
 
             recheck_long_hours = settings.config.getint("Interests", "VERIFIED_RECHECK_HOURS_LONG", fallback=24)
             long_recheck_due = False
-            if recheck_long_hours > 0 and verified_long_dt < verified_dt:
+            if recheck_long_hours > 0:
                 long_recheck_due = (now - verified_long_dt).total_seconds() >= recheck_long_hours * 3600
 
             if not forward_due and not recheck_due and not long_recheck_due:
@@ -723,9 +716,6 @@ class Main:
                         f"{max_lookback_days}d → подрезаем до {earliest_allowed.strftime(TIME_FMT)}."
                     )
                     verified_long_dt = earliest_allowed
-
-            if verified_long_dt > verified_dt:
-                verified_long_dt = verified_dt
 
             collected: list[dict] = []
 

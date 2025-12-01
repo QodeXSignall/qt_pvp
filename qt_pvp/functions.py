@@ -354,8 +354,8 @@ def save_reg_verified_until(reg_id: str, timestamp: str):
 
 def save_reg_verified_until_long(reg_id: str, timestamp: str):
     """
-    Аналог save_reg_verified_until, но verified_until_long не должен убегать
-    вперёд verified_until, чтобы окна recheck не пересекались.
+    Независимый маркер длинного recheck. Позволяем ему идти вперёд независимо от
+    verified_until, чтобы окна короткой/длинной проверок не блокировали друг друга.
     """
     try:
         new_dt = datetime.datetime.strptime(timestamp, settings.TIME_FMT)
@@ -368,22 +368,6 @@ def save_reg_verified_until_long(reg_id: str, timestamp: str):
         regs = states.setdefault("regs", {})
         reg = regs.setdefault(reg_id, _default_new_reg_info())
         ensure_alarms_structure_inplace(regs, reg_id)
-
-        short_str = reg.get("verified_until")
-        short_dt = None
-        if short_str:
-            try:
-                short_dt = datetime.datetime.strptime(short_str, settings.TIME_FMT)
-            except Exception:
-                short_dt = None
-
-        if short_dt and new_dt > short_dt:
-            logger.info(
-                f"{reg_id}. verified_until_long ({timestamp}) не может быть позже verified_until ({short_str}). "
-                f"Используем verified_until."
-            )
-            new_dt = short_dt
-            timestamp = short_str
 
         cur_str = reg.get("verified_until_long")
         cur_dt = None

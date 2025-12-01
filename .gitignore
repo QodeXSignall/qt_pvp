@@ -8,3 +8,5 @@ venv/
 *.pyc
 *.grec
 *.xml
+.env
+.env.local
