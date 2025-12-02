@@ -3,6 +3,7 @@ from webdav3.exceptions import RemoteResourceNotFound
 from datetime import datetime, timedelta
 from typing import List, Tuple, Dict, Set
 from qt_pvp import functions as main_funcs
+from qt_pvp.interest_merge_funcs import merge_overlapping_interests
 from main_operator import Main
 import asyncio
 import os
@@ -122,6 +123,7 @@ async def main(day_str = DAY_STR, reg_id = REG_ID):
     reg_info = main_funcs.get_reg_info(reg_id=reg_id)
     interests = await inst.get_interests_async(reg_id=reg_id, reg_info=reg_info,
                                    start_time=start_time, stop_time=stop_time)
+    interests = merge_overlapping_interests(interests)
     print(f"\Total cloud interests: {len(folder_names)}")
     for interest in folder_names:
         print(f"\t{interest}")
@@ -149,11 +151,7 @@ async def main(day_str = DAY_STR, reg_id = REG_ID):
 
 
 if __name__ == "__main__":
-    for day in [
-        "2025.11.29",
-        #"2025.10.20"
-    ]:
-        #day = "2025.08.17"
-        reg_id = "108411"
-        #reg_id = "018270348452"
-        asyncio.run(main(day_str=day, reg_id=reg_id))
+    day = "2025.11.30"
+    #reg_id = "108411"
+    reg_id = "018270348452"
+    asyncio.run(main(day_str=day, reg_id=reg_id))
