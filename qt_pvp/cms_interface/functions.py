@@ -821,7 +821,7 @@ def find_interests_by_lifting_switches(
                 if ignore_name:
                     logger.info(f"{reg_id}: [IGNORE] Концевик в зоне игнора '{ignore_name}', интерес пропущен.")
                 else:
-                loading_intervals.append(interval)
+                    loading_intervals.append(interval)
                 first_interest = False
             else:
                 logger.info(f"{reg_id}: [SKIP] Пропуск: нет {'time_before' if not time_before else ''}{' и ' if not time_before and not time_after else ''}{'time_after' if not time_after else ''}")
