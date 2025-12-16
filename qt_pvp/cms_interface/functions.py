@@ -624,9 +624,9 @@ def find_interests_by_lifting_switches(
                 if ignore_name:
                     logger.info(f"{reg_id}: [IGNORE] Концевик в зоне игнора '{ignore_name}', интерес пропущен.")
                 else:
-                loading_intervals.append(interval)
-                first_interest = False
-                logger.info(f"{reg_id}: [ALARM GAP] Добавлен интерес по alarm {alarm_ts_str}: {time_before} → {time_after_adj}")
+                    loading_intervals.append(interval)
+                    first_interest = False
+                    logger.info(f"{reg_id}: [ALARM GAP] Добавлен интерес по alarm {alarm_ts_str}: {time_before} → {time_after_adj}")
 
 
         # === Старая логика концевиков — без изменений ===
