@@ -1,5 +1,6 @@
 from typing import Optional, Dict, Any, List, Tuple
 from qt_pvp.functions import get_reg_info
+from qt_pvp import geo_funcs
 from qt_pvp.logger import logger
 from qt_pvp.data import settings
 from bisect import bisect_left
@@ -418,6 +419,22 @@ def find_interests_by_lifting_switches(
     reg_cfg = get_reg_info(reg_id) if reg_id else None
 
     try:
+        ignore_points = geo_funcs.get_ignore_points()
+    except Exception as e:
+        logger.warning(f"{reg_id}: [IGNORE] Не удалось загрузить ignore_points: {e}")
+        ignore_points = []
+    ignore_tolerance = settings.config.getint("Interests", "IGNORE_POINTS_TOLERANCE", fallback=0)
+
+    def _ignored_geo(geo: str | None) -> str | None:
+        if not geo or not ignore_points or ignore_tolerance <= 0:
+            return None
+        try:
+            return geo_funcs.find_nearby_name(geo, ignore_points, ignore_tolerance)
+        except Exception as e:
+            logger.warning(f"{reg_id}: [IGNORE] Ошибка проверки точки игнора: {e}")
+            return None
+
+    try:
         euro_alarm_cfg = int((reg_cfg or {}).get("euro_container_alarm", 4))
     except Exception:
         euro_alarm_cfg = 4
@@ -592,9 +609,10 @@ def find_interests_by_lifting_switches(
                     photo_after_timestamp=time_after_adj,
                     reg_id=reg_id,
                 )
+                geo = track.get("ps")
                 interval["report"] = {
                     "cargo_type": cargo_type_alarm,  # уже нормализованный "Контейнер"/"Бункер"
-                    "geo": track.get("ps"),
+                    "geo": geo,
                     "switches_amount": 1,
                     "switch_events": [{
                         "datetime": alarm_ts_str,
@@ -602,10 +620,14 @@ def find_interests_by_lifting_switches(
                         "source": "alarm-gap"
                     }],
                 }
-                #_ = _merge_or_append(loading_intervals, interval, epsilon_sec=30)
+                ignore_name = _ignored_geo(geo)
+                if ignore_name:
+                    logger.info(f"{reg_id}: [IGNORE] Концевик в зоне игнора '{ignore_name}', интерес пропущен.")
+                else:
                 loading_intervals.append(interval)
                 first_interest = False
                 logger.info(f"{reg_id}: [ALARM GAP] Добавлен интерес по alarm {alarm_ts_str}: {time_before} → {time_after_adj}")
+
 
         # === Старая логика концевиков — без изменений ===
         s1 = track.get("s1")
@@ -788,12 +810,17 @@ def find_interests_by_lifting_switches(
                     photo_after_timestamp=time_after,
                     reg_id=reg_id,
                 )
+                geo = track.get("ps")
                 interval["report"] = {
                     "cargo_type": cargo_type,
-                    "geo": track["ps"],
+                    "geo": geo,
                     "switches_amount": len(switch_events),
                     "switch_events": switch_events
                 }
+                ignore_name = _ignored_geo(geo)
+                if ignore_name:
+                    logger.info(f"{reg_id}: [IGNORE] Концевик в зоне игнора '{ignore_name}', интерес пропущен.")
+                else:
                 loading_intervals.append(interval)
                 first_interest = False
             else:

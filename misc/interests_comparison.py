@@ -110,12 +110,12 @@ async def main(day_str = DAY_STR, reg_id = REG_ID):
         print("[WARN] В этот день не найдено эталонных интересов на WebDAV.")
         return
 
-    # 2) Интервал для анализа = по первым/последним папкам ±60с
+    # 2) Интервал для анализа = весь день от 00:00:00 до 23:59:59
     _, s_first, _ = parse_folder_name(folder_names[0])
-    _, _, e_last  = parse_folder_name(folder_names[-1])
-    start_time = s_first.date().strftime(TIME_FMT)
-    #start_time = (s_first - timedelta(seconds=3600)).strftime(TIME_FMT)
-    stop_time  = (e_last  + timedelta(seconds=600)).strftime(TIME_FMT)
+    # Используем дату из первого интереса, но устанавливаем время на начало дня
+    start_time = s_first.date().strftime("%Y-%m-%d") + " 00:00:00"
+    # Конец дня - 23:59:59
+    stop_time = s_first.date().strftime("%Y-%m-%d") + " 23:59:59"
 
     # 3) Поиск интересов в системе
     inst = Main()
@@ -151,7 +151,7 @@ async def main(day_str = DAY_STR, reg_id = REG_ID):
 
 
 if __name__ == "__main__":
-    day = "2025.11.30"
+    day = "2025.12.12"
     #reg_id = "108411"
     reg_id = "018270348452"
     asyncio.run(main(day_str=day, reg_id=reg_id))

@@ -8,7 +8,6 @@ from qt_pvp.cms_interface import cms_api
 from qt_pvp import cloud_uploader
 from qt_pvp.logger import logger
 from qt_pvp.data import settings
-from qt_pvp import geo_funcs
 import posixpath
 import traceback
 import datetime
@@ -26,7 +25,6 @@ class Main:
         self._global_interests_sem = asyncio.Semaphore(settings.config.getint("Process", "MAX_GLOBAL_INTERESTS"))
         self._per_device_sem = {}
         self._devices_sem = asyncio.Semaphore(settings.config.getint("Process", "MAX_DEVICES_CONCURRENT"))
-        self.ignore_points = geo_funcs.get_ignore_points()
         self._interest_refill_in_progress = set()
         self.qt_rm_client = QTRMAsyncClient(
             base_url=settings.qt_rm_url,
@@ -221,6 +219,7 @@ class Main:
                 self.jsession, reg_id, start_time, stop_time))
             alarms_task = asyncio.create_task(cms_api.get_device_alarm_all_pages_async(self.jsession, reg_id, start_time, stop_time))
             tracks, alarm_reports = await asyncio.gather(tracks_task, alarms_task)
+            print(tracks[0]["tracks"][0:10])
             tracks = [t for page in tracks for t in (page.get("tracks") or [])]
             all_alarms = []
             for page in alarm_reports:
@@ -355,14 +354,6 @@ class Main:
         async with self._global_interests_sem, self._get_device_sem(reg_id): # Ограничители глобально и по устройство
             created_start_time = datetime.datetime.now()
             interest_name = interest["name"]
-            nearby_point =  geo_funcs.find_nearby_name(
-                interest["report"]["geo"], self.ignore_points,
-                settings.config.getint("Interests", "IGNORE_POINTS_TOLERANCE"))
-            if nearby_point:
-                logger.info(f"{reg_id}: Пропускаем интерес {interest_name}, "
-                            f"интерес зафиксирован рядом {interest['report']['geo']} с точкой игнора - {nearby_point}")
-                self.del_pending_interest(reg_id, interest_name)
-                return None
 
             logger.info(f"{reg_id}: Начинаем работу с интересом {interest_name}")
             logger.debug(f"{interest}")

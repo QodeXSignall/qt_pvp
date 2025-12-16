@@ -436,13 +436,30 @@ async def acreate_folder_if_not_exists(client, folder_path: str) -> bool:
     Внутри все блокирующие вызовы уводит в thread, а инвалидацию кэша делает через await.
     """
     try:
-        exists = await asyncio.to_thread(client.check, folder_path)
+        # check() тоже иногда может падать/таймаутиться — даём несколько попыток
+        check_attempt = 1
+        exists = False
+        while check_attempt <= 3:
+            try:
+                exists = await asyncio.to_thread(client.check, folder_path)
+                break
+            except Exception as e:
+                logger.warning(
+                    f"Ошибка при проверке существования папки {folder_path}: {e} "
+                    f"Попытка {check_attempt}/3"
+                )
+                if check_attempt == 3:
+                    logger.info(f"{folder_path}: пробуем создать папку несмотря на ошибки check()")
+                else:
+                    await asyncio.sleep(1)
+                check_attempt += 1
+
         if exists:
             return True
 
         logger.info(f"Папка {folder_path} не существует. Создаю...")
-        count = 0
-        while count < 2:
+        create_attempt = 1
+        while create_attempt <= 2:
             try:
                 # mkdir — блокирующий вызов webdav3 → в thread
                 await asyncio.to_thread(client.mkdir, folder_path)
@@ -453,11 +470,11 @@ async def acreate_folder_if_not_exists(client, folder_path: str) -> bool:
                 await ainvalidate_path(folder_path, meta_cache)
                 return True
             except Exception as e:
-                count += 1
                 logger.warning(
                     f"Ошибка при создании папки {folder_path} на WebDAV! ({e}) "
-                    f"Попытка {count}/2"
+                    f"Попытка {create_attempt}/2"
                 )
+                create_attempt += 1
                 await asyncio.sleep(1)
 
         logger.critical(f"Не удалось создать папку {folder_path}")
@@ -473,7 +490,24 @@ def create_folder_if_not_exists(client, folder_path):
     Проверяем существование папки и создаем её, если она отсутствует.
     """
     try:
-        if client.check(folder_path):
+        check_attempt = 1
+        exists = False
+        while check_attempt <= 3:
+            try:
+                exists = client.check(folder_path)
+                break
+            except Exception as e:
+                logger.warning(
+                    f"Ошибка при проверке существования папки {folder_path}: {e} "
+                    f"Попытка {check_attempt}/3"
+                )
+                if check_attempt == 3:
+                    logger.info(f"{folder_path}: пробуем создать папку несмотря на ошибки check()")
+                else:
+                    time.sleep(1)
+                check_attempt += 1
+
+        if exists:
             return True  # Уже есть
         logger.info(f"Папка {folder_path} не существует. Создаю...")
         count = 0
