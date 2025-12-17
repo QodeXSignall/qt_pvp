@@ -8,3 +8,5 @@ numpy
 portalocker
 httpx
 pygments
+fastapi
+uvicorn

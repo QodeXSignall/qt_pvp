@@ -1,0 +1,55 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "envFile": "${workspaceFolder}/.env",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "Python: interests_comparison.py",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/misc/interests_comparison.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "envFile": "${workspaceFolder}/.env",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "Python: main_operator.py",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/main_operator.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "Python: interests_comparison.py (from system env)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/misc/interests_comparison.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+                "webdav_hostname": "${env:webdav_hostname}",
+                "webdav_login": "${env:webdav_login}",
+                "webdav_password": "${env:webdav_password}"
+            }
+        }
+    ]
+}
+
