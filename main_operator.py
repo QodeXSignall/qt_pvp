@@ -22,15 +22,25 @@ class Main:
         self.output_format = output_format
         self.devices_in_progress = []
         self.TIME_FMT = "%Y-%m-%d %H:%M:%S"
-        self._global_interests_sem = asyncio.Semaphore(settings.config.getint("Process", "MAX_GLOBAL_INTERESTS"))
+        self._global_interests_sem = None
         self._per_device_sem = {}
-        self._devices_sem = asyncio.Semaphore(settings.config.getint("Process", "MAX_DEVICES_CONCURRENT"))
+        self._devices_sem = None
         self._interest_refill_in_progress = set()
         self.qt_rm_client = QTRMAsyncClient(
             base_url=settings.qt_rm_url,
             username=settings.qt_rm_login,
             password=settings.qt_rm_password,
             concurrent_requests=settings.config.getint("QT_RM", "CONCURRENT_REQUESTS", fallback=16),)
+
+    def _get_global_sem(self):
+        if self._global_interests_sem is None:
+            self._global_interests_sem = asyncio.Semaphore(settings.config.getint("Process", "MAX_GLOBAL_INTERESTS"))
+        return self._global_interests_sem
+
+    def _get_devices_sem(self):
+        if self._devices_sem is None:
+            self._devices_sem = asyncio.Semaphore(settings.config.getint("Process", "MAX_DEVICES_CONCURRENT"))
+        return self._devices_sem
 
     def _get_device_sem(self, reg_id):
         sem = self._per_device_sem.get(reg_id)
@@ -219,7 +229,6 @@ class Main:
                 self.jsession, reg_id, start_time, stop_time))
             alarms_task = asyncio.create_task(cms_api.get_device_alarm_all_pages_async(self.jsession, reg_id, start_time, stop_time))
             tracks, alarm_reports = await asyncio.gather(tracks_task, alarms_task)
-            print(tracks[0]["tracks"][0:10])
             tracks = [t for page in tracks for t in (page.get("tracks") or [])]
             all_alarms = []
             for page in alarm_reports:
@@ -425,7 +434,10 @@ class Main:
 
             if not interest_video_exists:
                 file_dict = channels_files_dict.get(channel_id)
-                full_clip_path = file_dict["path"]
+                if file_dict:
+                    full_clip_path = file_dict.get("path")
+                else:
+                    full_clip_path = None
                 if full_clip_path:
                      full_clip_upload_status = await self.upload_interest_video_cloud(
                         reg_id=reg_id,
@@ -548,11 +560,15 @@ class Main:
                 reg_id=reg_id,
             )
 
-        tasks = [asyncio.create_task(_extract_for_channel(ch, videos_by_channel.get(ch))) for ch in channels]
+        # Создаём словарь task -> channel для корректного маппинга
+        task_to_channel = {}
+        for ch in channels:
+            task = asyncio.create_task(_extract_for_channel(ch, videos_by_channel.get(ch)))
+            task_to_channel[task] = ch
 
         # Собираем результаты по мере готовности
-        for ch, t in zip(channels, asyncio.as_completed(tasks)):
-            first_item, last_item = await t
+        for task in asyncio.as_completed(task_to_channel.keys()):
+            first_item, last_item = await task
             if first_item:
                 before_items.append(first_item)
             if last_item:
