@@ -3,7 +3,8 @@ import asyncio
 import datetime
 from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Security, Depends
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field, validator
 from webdav3.client import Client
 from webdav3.exceptions import RemoteResourceNotFound
@@ -14,6 +15,9 @@ from qt_pvp.cms_interface import functions as cms_funcs
 from main_operator import Main
 
 
+API_KEY = os.environ.get("API_KEY")
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
 WEBDAV_OPTIONS = {
     "webdav_hostname": os.environ.get("webdav_hostname"),
     "webdav_login": os.environ.get("webdav_login"),
@@ -23,6 +27,142 @@ WEBDAV_OPTIONS = {
 TIME_FMT_FN = "%Y.%m.%d %H.%M.%S"   # для имён папок
 TIME_FMT_DAY = "%Y.%m.%d"          # входной формат даты с точками
 TIME_FMT = "%Y-%m-%d %H:%M:%S"     # для запросов CMS
+
+
+async def verify_api_key(api_key: str = Security(api_key_header)):
+    """Проверка API ключа из заголовка X-API-Key"""
+    if not API_KEY:
+        # Если API_KEY не установлен в .env - доступ открыт (dev mode)
+        return True
+    if api_key != API_KEY:
+        raise HTTPException(
+            status_code=403,
+            detail="Invalid or missing API key"
+        )
+    return True
+
+
+async def get_all_devices_from_cms(jsession: str) -> list[dict]:
+    """Получает список всех устройств (онлайн и оффлайн) из CMS"""
+    from qt_pvp.cms_interface import cms_api
+    from qt_pvp.logger import logger
+    
+    try:
+        devices = []
+        
+        # Получаем онлайн устройства
+        try:
+            online_resp = await cms_api.get_online_devices(jsession, device_id=None)
+            online_data = online_resp.json()
+            online_devices = online_data.get("onlines", [])
+            devices.extend(online_devices)
+            logger.info(f"[get_all_devices_from_cms] Got {len(online_devices)} online devices")
+        except Exception as e:
+            logger.warning(f"[get_all_devices_from_cms] Failed to get online devices: {e}")
+        
+        # Получаем оффлайн устройства
+        try:
+            offline_resp = await cms_api.get_offline_devices(jsession)
+            offline_data = offline_resp.json()
+            offline_devices = offline_data.get("offlines", [])
+            devices.extend(offline_devices)
+            logger.info(f"[get_all_devices_from_cms] Got {len(offline_devices)} offline devices")
+        except Exception as e:
+            logger.warning(f"[get_all_devices_from_cms] Failed to get offline devices: {e}")
+        
+        logger.info(f"[get_all_devices_from_cms] Total devices: {len(devices)}")
+        return devices
+    except Exception as e:
+        logger.error(f"[get_all_devices_from_cms] Error getting devices from CMS: {e}")
+        return []
+
+
+def get_reg_id_by_car_num_local(car_num: str) -> Optional[str]:
+    """Поиск reg_id по госномеру машины в states.json"""
+    try:
+        from qt_pvp.data import settings
+        import json
+        
+        with open(settings.states, 'r', encoding='utf-8') as f:
+            states = json.load(f)
+        
+        regs = states.get('regs', {})
+        for reg_id, reg_info in regs.items():
+            plate = reg_info.get('plate', '')
+            if not plate:
+                continue
+            plate = plate.upper().replace(' ', '')
+            search_plate = car_num.upper().replace(' ', '')
+            if plate == search_plate:
+                return reg_id
+        return None
+    except Exception:
+        return None
+
+
+async def get_reg_id_by_car_num_cms(car_num: str, jsession: str) -> Optional[str]:
+    """Поиск reg_id по госномеру через CMS API"""
+    devices = await get_all_devices_from_cms(jsession)
+    
+    search_plate = car_num.upper().replace(' ', '').replace('-', '')
+    
+    # Список возможных префиксов
+    prefixes = ['', 'ALG_', 'VOLVO_', 'KAMAZ_', 'MAN_', 'SCANIA_', 'MERCEDES_', 'OTK_', 'ZN2_', 'DES_']
+    
+    for device in devices:
+        vid = device.get('vid', '').upper().replace(' ', '').replace('-', '')
+        
+        # Проверяем точное совпадение
+        if vid == search_plate:
+            return device.get('did')
+        
+        # Проверяем с удалением префиксов
+        for prefix in prefixes:
+            if vid.startswith(prefix):
+                vid_without_prefix = vid[len(prefix):]
+                if vid_without_prefix == search_plate:
+                    return device.get('did')
+            
+            # Или наоборот - добавляем префикс к search_plate
+            if vid == prefix + search_plate:
+                return device.get('did')
+    
+    return None
+
+
+async def resolve_reg_id(reg_id: Optional[str], car_num: Optional[str], jsession: Optional[str] = None) -> str:
+    """Определяет reg_id из reg_id или car_num (сначала локально, затем через CMS)"""
+    from qt_pvp.logger import logger
+    
+    if reg_id:
+        return reg_id
+    
+    if car_num:
+        # 1) Сначала ищем локально в states.json
+        found_reg_id = get_reg_id_by_car_num_local(car_num)
+        if found_reg_id:
+            logger.info(f"[resolve_reg_id] Found in states.json: {car_num} -> {found_reg_id}")
+            return found_reg_id
+        
+        # 2) Запрос в CMS (создаем jsession если нет)
+        if not jsession:
+            from qt_pvp.cms_interface import cms_api
+            login_resp = await cms_api.login()
+            jsession = login_resp.json()["jsession"]
+        
+        found_reg_id = await get_reg_id_by_car_num_cms(car_num, jsession)
+        if found_reg_id:
+            logger.info(f"[resolve_reg_id] Found in CMS: {car_num} -> {found_reg_id}")
+            return found_reg_id
+        
+        # 3) Last fallback: используем сам car_num как reg_id (может совпадать с DevIDNO)
+        logger.info(f"[resolve_reg_id] Not found, using car_num as reg_id: {car_num}")
+        return car_num
+    
+    raise HTTPException(
+        status_code=422,
+        detail="Either 'reg_id' or 'car_num' must be provided"
+    )
 
 
 def _validate_webdav_options():
@@ -94,7 +234,8 @@ def diff_sets(expected, detected, eps_sec: int = 0):
 
 
 class CompareRequest(BaseModel):
-    reg_id: str = Field(..., description="DevIDNO регистратора")
+    reg_id: Optional[str] = Field(None, description="DevIDNO регистратора")
+    car_num: Optional[str] = Field(None, description="Госномер автомобиля")
     day: str = Field(..., description="Дата в формате YYYY.MM.DD")
     base_path: str = Field("/Tracker/Видео выгрузок", description="Базовый путь на WebDAV")
 
@@ -105,10 +246,17 @@ class CompareRequest(BaseModel):
         except Exception as e:
             raise ValueError(f"day must be YYYY.MM.DD: {e}")
         return v
+    
+    @validator("car_num")
+    def _check_reg_or_car(cls, v, values):
+        if not values.get("reg_id") and not v:
+            raise ValueError("Either reg_id or car_num must be provided")
+        return v
 
 
 class InterestRequest(BaseModel):
-    reg_id: str
+    reg_id: Optional[str] = Field(None, description="DevIDNO регистратора")
+    car_num: Optional[str] = Field(None, description="Госномер автомобиля")
     start_time: str = Field(..., description="YYYY-MM-DD HH:MM:SS")
     end_time: str = Field(..., description="YYYY-MM-DD HH:MM:SS")
     merge_overlaps: bool = True
@@ -120,6 +268,12 @@ class InterestRequest(BaseModel):
         except Exception as e:
             raise ValueError(f"time must be {TIME_FMT}: {e}")
         return v
+    
+    @validator("car_num")
+    def _check_reg_or_car(cls, v, values):
+        if not values.get("reg_id") and not v:
+            raise ValueError("Either reg_id or car_num must be provided")
+        return v
 
 
 class SiteItem(BaseModel):
@@ -129,7 +283,8 @@ class SiteItem(BaseModel):
 
 
 class StopsRequest(BaseModel):
-    reg_id: str
+    reg_id: Optional[str] = Field(None, description="DevIDNO регистратора")
+    car_num: Optional[str] = Field(None, description="Госномер автомобиля")
     date: str = Field(..., description="Дата в формате YYYY-MM-DD")
     sites: List[SiteItem]
     radius_m: float = 120.0
@@ -140,6 +295,12 @@ class StopsRequest(BaseModel):
             datetime.datetime.strptime(v, "%Y-%m-%d")
         except Exception as e:
             raise ValueError(f"date must be YYYY-MM-DD: {e}")
+        return v
+    
+    @validator("car_num")
+    def _check_reg_or_car(cls, v, values):
+        if not values.get("reg_id") and not v:
+            raise ValueError("Either reg_id or car_num must be provided")
         return v
 
 
@@ -153,12 +314,15 @@ async def _get_main_logged_in() -> Main:
 
 
 @app.post("/compare-interests")
-async def compare_interests(req: CompareRequest):
+async def compare_interests(req: CompareRequest, authorized: bool = Depends(verify_api_key)):
     _validate_webdav_options()
     client = Client(WEBDAV_OPTIONS)
 
-    reg_info = main_funcs.get_reg_info(req.reg_id) or {}
-    plate = reg_info.get("plate") or req.reg_id
+    # Логинимся в CMS для resolve и дальнейших запросов
+    m = await _get_main_logged_in()
+    reg_id = await resolve_reg_id(req.reg_id, req.car_num, m.jsession)
+    reg_info = main_funcs.get_reg_info(reg_id) or {}
+    plate = reg_info.get("plate") or reg_id
 
     try:
         folder_names = list_interest_folders(client, req.base_path, plate, req.day)
@@ -170,10 +334,9 @@ async def compare_interests(req: CompareRequest):
     start_time = f"{day_dt.strftime('%Y-%m-%d')} 00:00:00"
     stop_time = f"{day_dt.strftime('%Y-%m-%d')} 23:59:59"
 
-    m = await _get_main_logged_in()
-    reg_info_full = main_funcs.get_reg_info(req.reg_id)
+    reg_info_full = main_funcs.get_reg_info(reg_id)
     interests = await m.get_interests_async(
-        reg_id=req.reg_id,
+        reg_id=reg_id,
         reg_info=reg_info_full,
         start_time=start_time,
         stop_time=stop_time,
@@ -193,11 +356,12 @@ async def compare_interests(req: CompareRequest):
 
 
 @app.post("/get-interests")
-async def get_interests_api(req: InterestRequest):
+async def get_interests_api(req: InterestRequest, authorized: bool = Depends(verify_api_key)):
     m = await _get_main_logged_in()
-    reg_info_full = main_funcs.get_reg_info(req.reg_id)
+    reg_id = await resolve_reg_id(req.reg_id, req.car_num, m.jsession)
+    reg_info_full = main_funcs.get_reg_info(reg_id)
     interests = await m.get_interests_async(
-        reg_id=req.reg_id,
+        reg_id=reg_id,
         reg_info=reg_info_full,
         start_time=req.start_time,
         stop_time=req.end_time,
@@ -208,10 +372,11 @@ async def get_interests_api(req: InterestRequest):
 
 
 @app.post("/find-stops")
-async def find_stops_api(req: StopsRequest):
+async def find_stops_api(req: StopsRequest, authorized: bool = Depends(verify_api_key)):
     m = await _get_main_logged_in()
+    reg_id = await resolve_reg_id(req.reg_id, req.car_num, m.jsession)
     res = await cms_funcs.find_stops_near_sites_by_date(
-        reg_id=req.reg_id,
+        reg_id=reg_id,
         sites=[s.dict() for s in req.sites],
         date=req.date,
         radius_m=req.radius_m,
