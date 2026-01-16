@@ -162,6 +162,17 @@ async def get_online_devices(jsession, device_id=None):
 
 
 @functions.cms_data_get_decorator_async()
+async def get_offline_devices(jsession, device_id=None):
+    url = f"{settings.cms_host}/StandardApiAction_getDeviceOlStatus.action?"
+    params = {"jsession": jsession,
+              "status": 0,
+              "devIdno": device_id}
+    async with limits.get_cms_global_sem():
+        client = cms_http.get_cms_async_client()
+        return await client.get(url, params=params)
+
+
+@functions.cms_data_get_decorator_async()
 async def login():
     url = f"{settings.cms_host}/StandardApiAction_login.action?"
     params = {"account": settings.cms_login,
