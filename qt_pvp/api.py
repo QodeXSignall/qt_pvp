@@ -64,7 +64,13 @@ async def get_all_devices_from_cms(jsession: str) -> list[dict]:
         try:
             offline_resp = await cms_api.get_offline_devices(jsession)
             offline_data = offline_resp.json()
-            offline_devices = offline_data.get("offlines", [])
+            # Некоторые CMS возвращают список не в "offlines", а в "onlines" даже для status=0
+            offline_devices = (
+                offline_data.get("offlines")
+                or offline_data.get("onlines")
+                or offline_data.get("devices")
+                or []
+            )
             devices.extend(offline_devices)
             logger.info(f"[get_all_devices_from_cms] Got {len(offline_devices)} offline devices")
         except Exception as e:
