@@ -27,12 +27,13 @@ logger = logging.getLogger(__name__)
 if settings.config.getboolean("General", "debug"):
     logger.setLevel(logging.DEBUG)
 
+log_filename = os.path.join(settings.LOGS_DIR, f'journal_{os.getpid()}.log')
 handler = CustomTimedRotatingFileHandler(
-    filename=os.path.join(settings.LOGS_DIR, 'journal.log'),
+    filename=log_filename,
     when='midnight',
     backupCount=60,
     encoding='utf-8',
-    delay=False)
+    delay=True)
 
 stream_handler = logging.StreamHandler()
 formatter = Formatter(

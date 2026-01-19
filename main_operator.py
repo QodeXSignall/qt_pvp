@@ -614,7 +614,7 @@ class Main:
                     continue
 
                 async def _run_with_limit(rid, pl):
-                    async with self._devices_sem:
+                    async with self._get_devices_sem():
                         await self.operate_device(rid, pl)
 
                 # Стартуем корутину и НЕ ждём всю пачку
