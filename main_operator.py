@@ -360,7 +360,8 @@ class Main:
 
     async def _process_one_interest(self, interest: dict, channel_id) -> str | None:
         reg_id = interest.get("reg_id")
-        async with self._global_interests_sem, self._get_device_sem(reg_id): # Ограничители глобально и по устройство
+        # Ограничители глобально и по устройству
+        async with self._get_global_sem(), self._get_device_sem(reg_id):
             created_start_time = datetime.datetime.now()
             interest_name = interest["name"]
 
